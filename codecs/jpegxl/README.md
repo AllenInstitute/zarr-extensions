@@ -175,5 +175,4 @@ No changes yet.
 
 ## Current maintainers
 
-- Jeremy Maitin-Shepard
-- Forrest Collman
+- TBD
