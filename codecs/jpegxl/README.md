@@ -1,0 +1,179 @@
+# jpegxl codec
+
+Defines an `array -> bytes` codec that encodes an array chunk as a
+[JPEG XL](https://jpeg.org/jpegxl/) codestream.
+
+JPEG XL supports both lossless and lossy compression of 8- and 16-bit integer
+and floating-point samples, with one or more channels and one or more frames.
+This codec is intentionally minimal: it fixes a simple relationship between the
+array chunk and the JPEG XL image, and delegates all dimension rearrangement to
+the [`reshape`](../reshape/README.md) and [`transpose`](../transpose/README.md)
+codecs.
+
+> This document is a proposed extension. It is licensed under the
+> [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/).
+
+## Codec name
+
+The value of the `name` member in the codec object MUST be `jpegxl`.
+
+## Configuration parameters
+
+The codec has no required configuration parameters. Encoders MAY record
+implementation-specific encoding hints (for example `effort`, `distance`, or
+`lossless`) in the `configuration` object, but **decoders MUST ignore them**:
+everything needed to decode is contained in the JPEG XL codestream itself.
+
+See [`schema.json`](./schema.json) for the JSON schema.
+
+## Encoded representation
+
+The encoded chunk is a JPEG XL image in either of the two forms permitted by
+the JPEG XL standard: a bare codestream (beginning with `0xFF 0x0A`) or the
+ISOBMFF box container (beginning with the JXL container signature). Decoders
+MUST accept both forms. Encoders SHOULD write a bare codestream; the container
+form exists to carry metadata boxes (Exif, XMP, JPEG-reconstruction data) that
+this codec does not use, and decoders MUST ignore any such boxes.
+
+## Array shape contract
+
+Let the JPEG XL image have `width` (`W`), `height` (`H`), `samples` (`S`, the
+number of interleaved sample channels) and `frames` (`F`, the number of
+animation keyframes). The decoded array chunk MUST equal the _native JPEG XL
+shape_
+
+```
+[F, H, W, S]
+```
+
+in C (row-major) order, with the `F` axis omitted when `F == 1` and the `S` axis
+omitted when `S == 1`. Equivalently, the chunk shape MUST be one of:
+
+| chunk shape    | meaning                      |
+| -------------- | ---------------------------- |
+| `[H, W]`       | single-frame, single-channel |
+| `[H, W, S]`    | single-frame, multi-channel  |
+| `[F, H, W]`    | multi-frame, single-channel  |
+| `[F, H, W, S]` | multi-frame, multi-channel   |
+
+Decoders MUST return an error if the chunk shape is not one of these forms, or
+if `W`, `H`, `S`, `F` derived from the codestream are not consistent with it.
+
+This fixed contract means the codec never guesses which array dimensions are
+spatial, channel, or frame dimensions. To store an array whose chunk shape is
+not already in one of the forms above, insert a `reshape` codec (and, if the
+channel axis is not innermost, a `transpose` codec) before `jpegxl`. This is the
+same division of responsibility used by other constrained codecs, and it moves
+the "squeeze" behavior of some JPEG XL bindings into the separate `reshape`
+codec.
+
+### Channels (`S`)
+
+The JPEG XL codestream distinguishes _color channels_ (1 for grayscale or 3 for
+a color image; XYB/YCbCr transforms and chroma subsampling apply only to these)
+from _extra channels_ (alpha, depth, and other data), and the format permits a
+large number of extra channels. The `S` axis of the decoded chunk is the total
+number of interleaved sample channels the decoder produces.
+
+In practice this codec's reference decoder supports `S ∈ {1, 3}` — grayscale,
+RGB. Decoders MUST return an error for a channel count
+they do not support rather than silently mismatching the chunk shape.
+
+`S` is **not** a general mechanism for stacking many independent measurement
+channels. For data with an arbitrary number of independent channels (e.g.
+fluorescence or multispectral microscopy), do not encode them as one
+multi-channel image; instead make the channel axis a chunk/shard dimension
+(using `reshape`/`transpose`) so each channel is compressed independently as a
+grayscale `[H, W]` (or `[H, W, 1]`) image. This both fits the supported channel
+counts and preserves per-channel fidelity (see below). If mutli-channel images are natural colorized images in which it would make sense to combine 3 channels together then one can utilize a [H,W,3] compression format, but one should choose to do so explicitly and not default to it.
+
+## Supported data types
+
+`uint8`, `uint16`, and `float32`.
+
+The sample bit depth recorded in the codestream's image header MUST match the
+array data type: `bits_per_sample` of 8 for `uint8`, 16 for `uint16`, and
+32-bit float samples (`bits_per_sample` 32 with 8 exponent bits) for
+`float32`. Decoders MUST return an error on a mismatch rather than rescale
+samples to the range of the array data type — for example, a 12-bit
+codestream MUST NOT be expanded to the full `uint16` range, since the
+rescaled values would silently differ from the values originally stored in
+the array.
+
+## Sample layout and color
+
+Samples are stored in C order, so for a chunk shape ending in `S` the channels
+are interleaved (the innermost, unit-stride axis). If a different in-memory
+channel order is required, use the `transpose` codec.
+
+Decoders MUST return samples in the color space signaled by the codestream's
+image header, inverting any codestream-internal transforms (XYB, YCbCr,
+chroma upsampling) as defined by the JPEG XL specification, and MUST NOT
+apply any further conversion toward a perceptual or display color space (for
+example forcing an sRGB gamma or applying an ICC-profile conversion). Note
+that many general-purpose JPEG XL APIs convert to a preferred or display
+profile by default; implementations of this codec must disable that. When
+JPEG XL is used losslessly, the decoded samples are bit-exact copies of the
+encoded array.
+
+Unlike the JPEG codec, this codec has **no** `encoded_color_space` or
+`subsampling` parameters: JPEG XL manages color internally within the
+codestream. 
+
+> **Note:** JPEG XL can be lossy. Repeated decode/encode cycles compound
+> artifacts, and lossy compression is unsuitable for label/segmentation data.
+
+## Example
+
+The array metadata below stores a `[1, 1, 32, 256, 256]` chunk (for example a
+`c, t, z, y, x` layout with unit `c` and `t`) as a single 32-frame JPEG XL
+image. The `reshape` codec drops the two leading unit dimensions to produce the
+`[32, 256, 256]` (`[F, H, W]`) native image shape.
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [1, 1, 32, 256, 256] }
+  },
+  "codecs": [
+    {
+      "name": "reshape",
+      "configuration": { "shape": [[2], [3], [4]] }
+    },
+    {
+      "name": "jpegxl",
+      "configuration": {}
+    }
+  ]
+}
+```
+
+A single-channel 2-D microscopy tile stored per channel/plane simply uses a
+`[H, W]` chunk with the `jpegxl` codec directly (no `reshape` needed).
+
+## Example data
+
+See the fixtures under
+[`testdata/jxl`](https://github.com/google/neuroglancer/tree/master/testdata/jxl)
+in the neuroglancer repository (`gray_u8_4x4.jxl`, `rgb_u8_2x2.jxl`, and the
+1×1 `uint8`/`uint16`/`float32` samples), together with their `fixtures.json`
+describing the expected decoded values.
+
+## Interoperability and compatibility
+
+- The native shape contract matches the (squeezed) decode output of the
+  [`imagecodecs`](https://github.com/cgohlke/imagecodecs) `JpegXl` numcodecs
+  codec, with the `squeeze` behavior delegated to the `reshape` codec.
+- A reference decoder implementation is provided by
+  [neuroglancer](https://github.com/google/neuroglancer) in
+  `src/datasource/zarr/codec/jpegxl`, which decodes  `jpegxl` chains using the `jxl-oxide` JPEG XL decoder compiled to WebAssembly.  It also supports the `transpose` and `reshape` codecs which are required to make this practically useful for general Nd data. 
+
+## Change log
+
+No changes yet.
+
+## Current maintainers
+
+- Jeremy Maitin-Shepard
+- Forrest Collman
