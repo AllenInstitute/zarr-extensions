@@ -19,12 +19,41 @@ The value of the `name` member in the codec object MUST be `jpegxl`.
 
 ## Configuration parameters
 
-The codec has no required configuration parameters. Encoders MAY record
-implementation-specific encoding hints (for example `effort`, `distance`, or
-`lossless`) in the `configuration` object, but **decoders MUST ignore them**:
-everything needed to decode is contained in the JPEG XL codestream itself.
+The codec has no required configuration parameters; the `configuration` object
+MAY be omitted or empty. Any members that are present are **encoder hints**: an
+encoder MAY use them to control how it produces the codestream (for example the
+compression `distance` or `effort`), and they serve as a record of how the
+codestream was produced. They have no normative meaning for decoding.
 
-See [`schema.json`](./schema.json) for the JSON schema.
+The entire `configuration` object is irrelevant to decoding. A decoder MUST
+derive the image geometry (`W`, `H`, `S`, `F`), the sample data type, and the
+color encoding solely from the JPEG XL codestream, and:
+
+- MUST ignore every member of `configuration`;
+- MUST NOT change its output based on any member of `configuration`;
+- MUST NOT reject a chunk because `configuration` contains members it does not
+  recognize.
+
+This design is possible because a JPEG XL codestream fully self-describes its
+dimensions, bit depth, and color encoding — including any internal color
+transform (XYB, YCbCr) and chroma subsampling. There is therefore **no
+decode-time parameter** analogous to the color-space selector that baseline
+JPEG/JFIF requires (where three channels are ambiguously either RGB or YCbCr
+and the decoder must be told which). A conforming encoder MUST NOT use a
+`configuration` member to select an encoding whose correct interpretation is
+not already recorded in the codestream; equivalently, discarding the entire
+`configuration` object MUST NOT change the decoded array.
+
+Because the members are non-normative, `configuration` is an **open set**:
+encoders MAY record any implementation-specific parameters — for example
+`effort`, `distance`, `lossless`, `decodingspeed`, `photometric`, or
+`bitspersample` — and a decoder MUST still reconstruct the array exactly while
+ignoring all of them. This lets an implementation faithfully record its full
+encoder parameter set (aiding provenance and lossless re-encoding across a
+decode/encode cycle) without affecting interoperability.
+
+See [`schema.json`](./schema.json) for the documented members; additional
+members are permitted.
 
 ## Encoded representation
 
@@ -59,13 +88,26 @@ omitted when `S == 1`. Equivalently, the chunk shape MUST be one of:
 Decoders MUST return an error if the chunk shape is not one of these forms, or
 if `W`, `H`, `S`, `F` derived from the codestream are not consistent with it.
 
-This fixed contract means the codec never guesses which array dimensions are
-spatial, channel, or frame dimensions. To store an array whose chunk shape is
-not already in one of the forms above, insert a `reshape` codec (and, if the
-channel axis is not innermost, a `transpose` codec) before `jpegxl`. This is the
-same division of responsibility used by other constrained codecs, and it moves
-the "squeeze" behavior of some JPEG XL bindings into the separate `reshape`
-codec.
+**Disambiguating the two 3-D forms.** A three-dimensional chunk is either
+`[H, W, S]` (single frame, `S` channels) or `[F, H, W]` (`F` frames, one
+channel). Following the convention of the reference bindings
+([`imagecodecs`](https://github.com/cgohlke/imagecodecs)), the two are
+distinguished by the size of the trailing axis: a trailing axis of size **≤ 4**
+is the sample axis `S`, giving `[H, W, S]`; a trailing axis of size **≥ 5** is
+the width `W`, so the leading axis is the frame axis `F`, giving `[F, H, W]`. A
+consequence is that the interleaved-sample form `[H, W, S]` is limited to
+`S ≤ 4` (see [Channels](#channels-s)); an array with more than four independent
+channels is stored with the channel axis as a separate chunk/frame dimension,
+not interleaved.
+
+Apart from this trailing-axis rule for 3-D chunks (needed only because `[H,W,S]`
+and `[F,H,W]` are both three-dimensional), the codec does not guess which array
+dimensions are spatial, channel, or frame dimensions. To store an array whose
+chunk shape is not already in one of the forms above, insert a `reshape` codec
+(and, if the channel axis is not innermost, a `transpose` codec) before
+`jpegxl`. This is the same division of responsibility used by other constrained
+codecs, and it moves the "squeeze" behavior of some JPEG XL bindings into the
+separate `reshape` codec.
 
 ### Channels (`S`)
 
@@ -73,11 +115,18 @@ The JPEG XL codestream distinguishes _color channels_ (1 for grayscale or 3 for
 a color image; XYB/YCbCr transforms and chroma subsampling apply only to these)
 from _extra channels_ (alpha, depth, and other data), and the format permits a
 large number of extra channels. The `S` axis of the decoded chunk is the total
-number of interleaved sample channels the decoder produces.
+number of interleaved sample channels the decoder produces (color channels plus
+extra channels).
 
-In practice this codec's reference decoder supports `S ∈ {1, 3}` — grayscale,
-RGB. Decoders MUST return an error for a channel count
-they do not support rather than silently mismatching the chunk shape.
+Because a trailing axis of size `≥ 5` denotes a spatial axis rather than the
+sample axis (see the disambiguation rule above), the interleaved-sample form
+`[H, W, S]` covers only `S ∈ {1, 2, 3, 4}`: `1`–`2` map to one grayscale color
+channel (plus, for `2`, one extra channel) and `3`–`4` map to three RGB color
+channels (plus, for `4`, one extra/alpha channel). In practice this codec's
+reference decoder supports `S ∈ {1, 3, 4}` — grayscale, RGB, and RGBA — and
+returns the RGBA alpha channel as stored (it is not forced opaque). Decoders
+MUST return an error for a channel count they do not support rather than
+silently mismatching the chunk shape.
 
 `S` is **not** a general mechanism for stacking many independent measurement
 channels. For data with an arbitrary number of independent channels (e.g.

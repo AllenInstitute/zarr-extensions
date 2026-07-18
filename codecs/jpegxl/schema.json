@@ -8,27 +8,42 @@
     },
     "configuration": {
       "type": "object",
-      "description": "Encoder hints only; decoders MUST ignore these and derive everything from the codestream.",
+      "description": "Encoder hints only. Every member is non-normative for decoding: decoders MUST ignore the entire object and derive geometry, data type, and color encoding from the codestream. The set is open, so implementations MAY record additional implementation-specific members, and any documented member MAY be null to indicate that no hint was recorded.",
       "properties": {
         "effort": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 1,
           "maximum": 10,
           "description": "Encoder effort/speed setting (ignored on decode)."
         },
         "distance": {
-          "type": "number",
+          "type": ["number", "null"],
           "minimum": 0,
           "description": "Butteraugli distance; 0 means mathematically lossless (ignored on decode)."
         },
         "lossless": {
-          "type": "boolean",
+          "type": ["boolean", "null"],
           "description": "Whether the codestream was encoded losslessly (ignored on decode)."
+        },
+        "decodingspeed": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Encoder tier trading file size for decode speed (ignored on decode)."
+        },
+        "photometric": {
+          "type": ["string", "integer", "null"],
+          "description": "Encoder-side color interpretation hint; the actual color encoding is recorded in the codestream (ignored on decode)."
+        },
+        "bitspersample": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Sample bit depth requested at encode time; the codestream records the authoritative value (ignored on decode)."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     }
   },
-  "required": ["name", "configuration"],
+  "required": ["name"],
   "additionalProperties": false
 }
