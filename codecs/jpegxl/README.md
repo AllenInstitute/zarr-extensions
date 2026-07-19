@@ -25,11 +25,10 @@ encoder MAY use them to control how it produces the codestream (for example the
 compression `distance` or `effort`), and they serve as a record of how the
 codestream was produced. They have no normative meaning for decoding.
 
-The entire `configuration` object is irrelevant to decoding. A decoder MUST
+The `configuration` object MUST not be utilized in decoding. A decoder MUST
 derive the image geometry (`W`, `H`, `S`, `F`), the sample data type, and the
 color encoding solely from the JPEG XL codestream, and:
 
-- MUST ignore every member of `configuration`;
 - MUST NOT change its output based on any member of `configuration`;
 - MUST NOT reject a chunk because `configuration` contains members it does not
   recognize.
@@ -39,16 +38,12 @@ dimensions, bit depth, and color encoding — including any internal color
 transform (XYB, YCbCr) and chroma subsampling. There is therefore **no
 decode-time parameter** analogous to the color-space selector that baseline
 JPEG/JFIF requires (where three channels are ambiguously either RGB or YCbCr
-and the decoder must be told which). A conforming encoder MUST NOT use a
-`configuration` member to select an encoding whose correct interpretation is
-not already recorded in the codestream; equivalently, discarding the entire
-`configuration` object MUST NOT change the decoded array.
+and the decoder must be told which). 
 
 Because the members are non-normative, `configuration` is an **open set**:
 encoders MAY record any implementation-specific parameters — for example
 `effort`, `distance`, `lossless`, `decodingspeed`, `photometric`, or
-`bitspersample` — and a decoder MUST still reconstruct the array exactly while
-ignoring all of them. This lets an implementation faithfully record its full
+`bitspersample` — and a decoder MUST reconstruct the array independant of them. This lets an implementation faithfully record its full
 encoder parameter set (aiding provenance and lossless re-encoding across a
 decode/encode cycle) without affecting interoperability.
 
@@ -59,7 +54,7 @@ members are permitted.
 
 The encoded chunk is a JPEG XL image in either of the two forms permitted by
 the JPEG XL standard: a bare codestream (beginning with `0xFF 0x0A`) or the
-ISOBMFF box container (beginning with the JXL container signature). Decoders
+ISOBMFF box container (beginning with the JXL container signature `0x00 0x00 0x00 0x0C 0x4A 0x58 0x4C 0x20 0x0D 0x0A 0x87 0x0A`). Decoders
 MUST accept both forms. Encoders SHOULD write a bare codestream; the container
 form exists to carry metadata boxes (Exif, XMP, JPEG-reconstruction data) that
 this codec does not use, and decoders MUST ignore any such boxes.
@@ -107,7 +102,7 @@ chunk shape is not already in one of the forms above, insert a `reshape` codec
 (and, if the channel axis is not innermost, a `transpose` codec) before
 `jpegxl`. This is the same division of responsibility used by other constrained
 codecs, and it moves the "squeeze" behavior of some JPEG XL bindings into the
-separate `reshape` codec.
+separate `reshape` codec. 
 
 ### Channels (`S`)
 
@@ -134,7 +129,7 @@ fluorescence or multispectral microscopy), do not encode them as one
 multi-channel image; instead make the channel axis a chunk/shard dimension
 (using `reshape`/`transpose`) so each channel is compressed independently as a
 grayscale `[H, W]` (or `[H, W, 1]`) image. This both fits the supported channel
-counts and preserves per-channel fidelity (see below). If mutli-channel images are natural colorized images in which it would make sense to combine 3 channels together then one can utilize a [H,W,3] compression format, but one should choose to do so explicitly and not default to it.
+counts and preserves per-channel fidelity (see below). If multi-channel images are natural colorized images in which it would make sense to combine 3 channels together then one can utilize a [H,W,3] compression format, but one should choose to do so explicitly and not default to it.
 
 ## Supported data types
 
@@ -172,9 +167,77 @@ codestream.
 > **Note:** JPEG XL can be lossy. Repeated decode/encode cycles compound
 > artifacts, and lossy compression is unsuitable for label/segmentation data.
 
-## Example
+## Examples
 
-The array metadata below stores a `[1, 1, 32, 256, 256]` chunk (for example a
+### 2-D grayscale tile
+
+A single-channel 2-D tile is a `[H, W]` chunk encoded directly, with no
+`reshape` needed.
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [256, 256] }
+  },
+  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+}
+```
+
+### 2-D RGB tile
+
+A natural-color image with the three color channels interleaved as the innermost
+axis is a `[H, W, 3]` chunk. The trailing axis of size 3 is the sample axis, so
+JPEG XL encodes an RGB image. Choose this deliberately for true-color data; do
+not use it to stack unrelated channels (see [Channels](#channels-s)).
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [256, 256, 3] }
+  },
+  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+}
+```
+
+### RGBA (color + alpha)
+
+A `[H, W, 4]` chunk encodes three RGB color channels plus one alpha (extra)
+channel. The alpha channel is stored and returned as-is (not forced opaque).
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [256, 256, 4] }
+  },
+  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+}
+```
+
+### Channel axis not innermost (`transpose`)
+
+If the color channel axis is not the innermost dimension — for example a
+channel-first `[3, H, W]` chunk (`c, y, x`) — insert a `transpose` codec to move
+it to the innermost position, so `jpegxl` receives `[H, W, 3]`.
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [3, 256, 256] }
+  },
+  "codecs": [
+    { "name": "transpose", "configuration": { "order": [1, 2, 0] } },
+    { "name": "jpegxl", "configuration": {} }
+  ]
+}
+```
+
+### Multi-frame stack (`reshape`)
+
+The metadata below stores a `[1, 1, 32, 256, 256]` chunk (for example a
 `c, t, z, y, x` layout with unit `c` and `t`) as a single 32-frame JPEG XL
 image. The `reshape` codec drops the two leading unit dimensions to produce the
 `[32, 256, 256]` (`[F, H, W]`) native image shape.
@@ -186,20 +249,54 @@ image. The `reshape` codec drops the two leading unit dimensions to produce the
     "configuration": { "chunk_shape": [1, 1, 32, 256, 256] }
   },
   "codecs": [
-    {
-      "name": "reshape",
-      "configuration": { "shape": [[2], [3], [4]] }
-    },
-    {
-      "name": "jpegxl",
-      "configuration": {}
-    }
+    { "name": "reshape", "configuration": { "shape": [[2], [3], [4]] } },
+    { "name": "jpegxl", "configuration": {} }
   ]
 }
 ```
 
-A single-channel 2-D microscopy tile stored per channel/plane simply uses a
-`[H, W]` chunk with the `jpegxl` codec directly (no `reshape` needed).
+### Many independent channels (compress each separately)
+
+For data with many independent measurement channels (e.g. fluorescence or
+multispectral microscopy), do not interleave them as `S`. Chunk the channel axis
+to 1 so each chunk holds a single channel, then use `reshape` to drop that unit
+axis, encoding each channel as an independent grayscale image. Here a
+`[c, z, y, x]` array chunked `[1, 32, 256, 256]` becomes a `[32, 256, 256]`
+grayscale frame stack, one per channel.
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [1, 32, 256, 256] }
+  },
+  "codecs": [
+    { "name": "reshape", "configuration": { "shape": [[1], [2], [3]] } },
+    { "name": "jpegxl", "configuration": {} }
+  ]
+}
+```
+
+### Lossy encoding with encoder hints
+
+Encoder parameters are recorded in `configuration` purely as hints; a decoder
+reconstructs the array from the codestream regardless of them. Here a `[H, W]`
+tile is encoded lossily at Butteraugli `distance` 1.0.
+
+```json
+{
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": { "chunk_shape": [256, 256] }
+  },
+  "codecs": [
+    {
+      "name": "jpegxl",
+      "configuration": { "lossless": false, "distance": 1.0, "effort": 7 }
+    }
+  ]
+}
+```
 
 ## Example data
 
