@@ -42,10 +42,28 @@ and the decoder must be told which).
 
 Because the members are non-normative, `configuration` is an **open set**:
 encoders MAY record any implementation-specific parameters — for example
-`effort`, `distance`, `lossless`, `decodingspeed`, `photometric`, or
-`bitspersample` — and a decoder MUST reconstruct the array independant of them. This lets an implementation faithfully record its full
-encoder parameter set (aiding provenance and lossless re-encoding across a
-decode/encode cycle) without affecting interoperability.
+`level` (a libjpeg-style 0–100 quality that an encoder maps to a Butteraugli
+`distance`), `effort`, `distance`, `lossless`, `decodingspeed`, `photometric`,
+`bitspersample`, `primaries`, `transfer`, or `usecontainer` — and a decoder
+MUST reconstruct the array independent of them. This lets an implementation
+faithfully record its full encoder parameter set (aiding provenance and
+lossless re-encoding across a decode/encode cycle) without affecting
+interoperability. Where an encoder hint corresponds to one already used by
+another image codec (for example `bitspersample`), implementations SHOULD reuse
+that name, but harmonized naming is not required since decoders ignore these
+members.
+
+Two kinds of members are deliberately **not** part of this codec's
+`configuration`:
+
+- **`planar`** (planar/channel-separated sample layout). This codec requires
+  the sample axis to be the innermost, interleaved (contiguous) axis (see
+  [Sample layout and color](#sample-layout-and-color)); a planar layout does not
+  round-trip through the shape contract, so encoders MUST NOT produce planar
+  channel ordering and there is no `planar` hint.
+- **Decode-time selectors** such as a frame `index` or an orientation toggle.
+  Frame selection does not apply. Every frame is decoded to the `F` axis. Orientation handling is fixed by this specification (see
+  [Orientation](#orientation)) rather than chosen per chunk.
 
 See [`schema.json`](./schema.json) for the documented members; additional
 members are permitted.
@@ -115,13 +133,19 @@ extra channels).
 
 Because a trailing axis of size `≥ 5` denotes a spatial axis rather than the
 sample axis (see the disambiguation rule above), the interleaved-sample form
-`[H, W, S]` covers only `S ∈ {1, 2, 3, 4}`: `1`–`2` map to one grayscale color
-channel (plus, for `2`, one extra channel) and `3`–`4` map to three RGB color
-channels (plus, for `4`, one extra/alpha channel). In practice this codec's
-reference decoder supports `S ∈ {1, 3, 4}` — grayscale, RGB, and RGBA — and
-returns the RGBA alpha channel as stored (it is not forced opaque). Decoders
-MUST return an error for a channel count they do not support rather than
-silently mismatching the chunk shape.
+`[H, W, S]` covers only `S ∈ {1, 2, 3, 4}`:
+
+| `S` | interpretation | color + extra channels |
+| --- | -------------- | ---------------------- |
+| `1` | grayscale (L)  | 1 gray                 |
+| `2` | grayscale + alpha (LA) | 1 gray + 1 extra (alpha) |
+| `3` | RGB            | 3 color                |
+| `4` | RGB + alpha (RGBA) | 3 color + 1 extra (alpha) |
+
+The reference decoders support all four (`S ∈ {1, 2, 3, 4}`) and return any
+alpha/extra channel as stored (it is not forced opaque). Decoders MUST return an
+error for a channel count they do not support rather than silently mismatching
+the chunk shape.
 
 `S` is **not** a general mechanism for stacking many independent measurement
 channels. For data with an arbitrary number of independent channels (e.g.
@@ -133,16 +157,25 @@ counts and preserves per-channel fidelity (see below). If multi-channel images a
 
 ## Supported data types
 
-`uint8`, `uint16`, and `float32`.
+`uint8`, `uint16`, `float16`, and `float32`.
 
 The sample bit depth recorded in the codestream's image header MUST match the
-array data type: `bits_per_sample` of 8 for `uint8`, 16 for `uint16`, and
-32-bit float samples (`bits_per_sample` 32 with 8 exponent bits) for
-`float32`. Decoders MUST return an error on a mismatch rather than rescale
-samples to the range of the array data type — for example, a 12-bit
-codestream MUST NOT be expanded to the full `uint16` range, since the
-rescaled values would silently differ from the values originally stored in
-the array.
+array data type:
+
+| data type | `bits_per_sample` | float | exponent bits |
+| --------- | ----------------- | ----- | ------------- |
+| `uint8`   | 8                 | no    | —             |
+| `uint16`  | 16                | no    | —             |
+| `float16` | 16                | yes   | 5 (IEEE half) |
+| `float32` | 32                | yes   | 8 (IEEE single) |
+
+Decoders MUST return an error on a mismatch rather than rescale samples to the
+range of the array data type — for example, a 12-bit codestream MUST NOT be
+expanded to the full `uint16` range, since the rescaled values would silently
+differ from the values originally stored in the array. Note that the exponent
+bits distinguish `float16` from `uint16`: both have `bits_per_sample` 16, so a
+decoder MUST use the codestream's float flag and exponent-bit count, not the bit
+width alone, to select the array data type.
 
 ## Sample layout and color
 
@@ -166,6 +199,32 @@ codestream.
 
 > **Note:** JPEG XL can be lossy. Repeated decode/encode cycles compound
 > artifacts, and lossy compression is unsuitable for label/segmentation data.
+
+## Orientation
+
+A JPEG XL codestream may record an EXIF-style image orientation (rotation/flip)
+in its header. Decoders for this codec **MUST NOT** apply that orientation
+transform: they MUST return samples in the stored pixel order, so that the
+decoded chunk matches the array's own axis order exactly. Any reorientation for
+display belongs to the OME-Zarr coordinate transforms of the surrounding array,
+not to this codec.
+
+Implementations built on general JPEG XL libraries that apply orientation by
+default MUST disable it (for example, `imagecodecs` decoders MUST pass
+`keeporientation=True`; the `jxl-oxide`-based reference decoder already returns
+stored order).
+
+## Relationship to a shared image layout
+
+The `[F, H, W, S]` native shape here is a special case of the more general
+image-layout contract that image codecs share — for instance the contiguous
+(interleaved) axis order `[frames…] [depth] height width [samples]` used by the
+[`imagecodecs`](https://github.com/cgohlke/imagecodecs) "image layout"
+abstraction (`imagecodecs/_shared.pyx`), with `depth = 1` for this 2-D-per-frame
+codec. The shape and channel model defined here is intended to be generalizable
+to other image-format codecs (JPEG, JPEG 2000, WebP, …); standardizing a single
+shared shape/channel contract across them is left to a follow-on discussion, so
+this document specifies it directly for `jpegxl`.
 
 ## Examples
 

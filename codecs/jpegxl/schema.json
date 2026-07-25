@@ -25,6 +25,24 @@
           "type": ["boolean", "null"],
           "description": "Whether the codestream was encoded losslessly (ignored on decode)."
         },
+        "level": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "libjpeg-style 0-100 quality that an encoder maps to a Butteraugli distance (ignored on decode)."
+        },
+        "primaries": {
+          "type": ["string", "integer", "null"],
+          "description": "Color primaries requested at encode time; the codestream records the authoritative value (ignored on decode)."
+        },
+        "transfer": {
+          "type": ["string", "integer", "null"],
+          "description": "Transfer function requested at encode time; the codestream records the authoritative value (ignored on decode)."
+        },
+        "usecontainer": {
+          "type": ["boolean", "null"],
+          "description": "Whether the encoder wrapped the codestream in the ISOBMFF container (ignored on decode; decoders accept both forms)."
+        },
         "decodingspeed": {
           "type": ["integer", "null"],
           "minimum": 0,
