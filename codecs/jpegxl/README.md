@@ -19,54 +19,64 @@ The value of the `name` member in the codec object MUST be `jpegxl`.
 
 ## Configuration parameters
 
-The codec has no required configuration parameters; the `configuration` object
-MAY be omitted or empty. Any members that are present are **encoder hints**: an
-encoder MAY use them to control how it produces the codestream (for example the
-compression `distance` or `effort`), and they serve as a record of how the
-codestream was produced. They have no normative meaning for decoding.
+The `configuration` object is REQUIRED and records the encoding parameters used
+to produce the codestream. These parameters do not affect decoding (see below),
+but recording them makes the encoding deliberate and reproducible. 
+This follows the convention of the other image codecs in
+this repository (for example [`jpeg`](../jpeg/README.md)).
 
-The `configuration` object MUST not be utilized in decoding. A decoder MUST
-derive the image geometry (`W`, `H`, `S`, `F`), the sample data type, and the
-color encoding solely from the JPEG XL codestream, and:
+The configuration covers the JPEG XL encoding parameters that determine the
+bytes written to the codestream. It is a **closed set**: implementations MUST
+NOT emit members other than those below, and a store is non-conformant if
+`configuration` contains unrecognized members. Encoders may provide sensible
+default values to users, but they should write those defaults into the metadata
+as a definitive source of truth about how to encode blocks. 
 
-- MUST NOT change its output based on any member of `configuration`;
-- MUST NOT reject a chunk because `configuration` contains members it does not
-  recognize.
+**Always present**:
 
-This design is possible because a JPEG XL codestream fully self-describes its
-dimensions, bit depth, and color encoding — including any internal color
-transform (XYB, YCbCr) and chroma subsampling. There is therefore **no
-decode-time parameter** analogous to the color-space selector that baseline
-JPEG/JFIF requires (where three channels are ambiguously either RGB or YCbCr
-and the decoder must be told which). 
+- **`lossless`** (boolean): whether the codestream is mathematically lossless.
+  When `true`, `distance` MUST be `0`; when `false`, `distance` MUST be greater
+  than `0`.
+- **`distance`** (number, ≥ 0): the Butteraugli distance target. `0` means
+  mathematically lossless; larger values allow more loss for smaller output.
+- **`effort`** (integer, `1`–`10`): the encoder effort/speed setting. Higher
+  values spend more time to reduce the encoded size.
+- **`decodingspeed`** (integer, `0`–`4`): tier trading encoded size for decode
+  speed (`0` = default, smallest).
+- **`photometric`** (string, one of `gray`, `rgb`, `xyb`, `unknown`): the color
+  space the encoder writes into the codestream. 
+- **`primaries`** (string, one of `srgb`, `p3`, `bt2100`, `custom`): the color
+  primaries.
+- **`transfer`** (string, one of `srgb`, `linear`, `pq`, `hlg`, `dci`, `bt709`,
+  `gamma`, `unknown`): the transfer function. 
+- **`bitspersample`** (integer, `1`–`32`): the sample bit depth. For integers it
+  MAY be below the type width to losslessly pack low-range values (the encoder
+  MUST ensure every value fits, or the result is lossy); for floats it MUST
+  equal the width. See [Supported data types](#supported-data-types).
+- **`usecontainer`** (boolean): whether the codestream is wrapped in the ISOBMFF
+  container. (see [Encoded representation](#encoded-representation)).
 
-Because the members are non-normative, `configuration` is an **open set**:
-encoders MAY record any implementation-specific parameters — for example
-`level` (a libjpeg-style 0–100 quality that an encoder maps to a Butteraugli
-`distance`), `effort`, `distance`, `lossless`, `decodingspeed`, `photometric`,
-`bitspersample`, `primaries`, `transfer`, or `usecontainer` — and a decoder
-MUST reconstruct the array independent of them. This lets an implementation
-faithfully record its full encoder parameter set (aiding provenance and
-lossless re-encoding across a decode/encode cycle) without affecting
-interoperability. Where an encoder hint corresponds to one already used by
-another image codec (for example `bitspersample`), implementations SHOULD reuse
-that name, but harmonized naming is not required since decoders ignore these
-members.
+Some parameters supported by JPEG XL bindings are deliberately **excluded**: a
+`planar` (channel-separated) layout, because this codec requires the sample axis
+to be the innermost, interleaved axis (see
+[Sample layout and color](#sample-layout-and-color)); and decode-time selectors
+such as a frame `index` or an orientation toggle, because every frame is decoded
+to the `F` axis and orientation handling is fixed by this specification (see
+[Orientation](#orientation)).
 
-Two kinds of members are deliberately **not** part of this codec's
-`configuration`:
+### Decoding does not use the configuration
 
-- **`planar`** (planar/channel-separated sample layout). This codec requires
-  the sample axis to be the innermost, interleaved (contiguous) axis (see
-  [Sample layout and color](#sample-layout-and-color)); a planar layout does not
-  round-trip through the shape contract, so encoders MUST NOT produce planar
-  channel ordering and there is no `planar` hint.
-- **Decode-time selectors** such as a frame `index` or an orientation toggle.
-  Frame selection does not apply. Every frame is decoded to the `F` axis. Orientation handling is fixed by this specification (see
-  [Orientation](#orientation)) rather than chosen per chunk.
+Although the parameters above are required, a decoder MUST NOT use them. A
+decoder MUST derive the image geometry (`W`, `H`, `S`, `F`), the sample data
+type, and the color encoding solely from the JPEG XL codestream, and MUST NOT
+change its output based on any member of `configuration`. This is possible
+because a JPEG XL codestream fully self-describes its dimensions, bit depth, and
+color encoding — including any internal color transform (XYB, YCbCr) and chroma
+subsampling. There is therefore **no decode-time parameter** analogous to the
+color-space selector that baseline JPEG/JFIF requires (where three channels are
+ambiguously either RGB or YCbCr and the decoder must be told which).
 
-See [`schema.json`](./schema.json) for the documented members; additional
-members are permitted.
+See [`schema.json`](./schema.json) for the JSON schema.
 
 ## Encoded representation
 
@@ -103,24 +113,18 @@ if `W`, `H`, `S`, `F` derived from the codestream are not consistent with it.
 
 **Disambiguating the two 3-D forms.** A three-dimensional chunk is either
 `[H, W, S]` (single frame, `S` channels) or `[F, H, W]` (`F` frames, one
-channel). Following the convention of the reference bindings
-([`imagecodecs`](https://github.com/cgohlke/imagecodecs)), the two are
-distinguished by the size of the trailing axis: a trailing axis of size **≤ 4**
-is the sample axis `S`, giving `[H, W, S]`; a trailing axis of size **≥ 5** is
-the width `W`, so the leading axis is the frame axis `F`, giving `[F, H, W]`. A
-consequence is that the interleaved-sample form `[H, W, S]` is limited to
-`S ≤ 4` (see [Channels](#channels-s)); an array with more than four independent
-channels is stored with the channel axis as a separate chunk/frame dimension,
-not interleaved.
+channel). Following the reference bindings
+([`imagecodecs`](https://github.com/cgohlke/imagecodecs)), the two are told
+apart by the trailing axis size: **≤ 4** is the sample axis `S` (`[H, W, S]`);
+**≥ 5** is the width, so the leading axis is the frame axis `F` (`[F, H, W]`).
+The interleaved form is therefore limited to `S ≤ 4` (see
+[Channels](#channels-s)).
 
-Apart from this trailing-axis rule for 3-D chunks (needed only because `[H,W,S]`
-and `[F,H,W]` are both three-dimensional), the codec does not guess which array
-dimensions are spatial, channel, or frame dimensions. To store an array whose
-chunk shape is not already in one of the forms above, insert a `reshape` codec
-(and, if the channel axis is not innermost, a `transpose` codec) before
-`jpegxl`. This is the same division of responsibility used by other constrained
-codecs, and it moves the "squeeze" behavior of some JPEG XL bindings into the
-separate `reshape` codec. 
+Aside from this trailing-axis rule, the codec does not infer which axes are
+spatial, channel, or frame. To store any chunk shape not already in one of the
+forms above — including an array with more than four channels — chain a
+`reshape` (and, if the channel axis is not innermost, a `transpose`) codec
+before `jpegxl`.
 
 ### Channels (`S`)
 
@@ -131,9 +135,7 @@ large number of extra channels. The `S` axis of the decoded chunk is the total
 number of interleaved sample channels the decoder produces (color channels plus
 extra channels).
 
-Because a trailing axis of size `≥ 5` denotes a spatial axis rather than the
-sample axis (see the disambiguation rule above), the interleaved-sample form
-`[H, W, S]` covers only `S ∈ {1, 2, 3, 4}`:
+The interleaved form (`S ≤ 4`, per the rule above) covers:
 
 | `S` | interpretation | color + extra channels |
 | --- | -------------- | ---------------------- |
@@ -147,35 +149,48 @@ alpha/extra channel as stored (it is not forced opaque). Decoders MUST return an
 error for a channel count they do not support rather than silently mismatching
 the chunk shape.
 
-`S` is **not** a general mechanism for stacking many independent measurement
-channels. For data with an arbitrary number of independent channels (e.g.
-fluorescence or multispectral microscopy), do not encode them as one
-multi-channel image; instead make the channel axis a chunk/shard dimension
-(using `reshape`/`transpose`) so each channel is compressed independently as a
-grayscale `[H, W]` (or `[H, W, 1]`) image. This both fits the supported channel
-counts and preserves per-channel fidelity (see below). If multi-channel images are natural colorized images in which it would make sense to combine 3 channels together then one can utilize a [H,W,3] compression format, but one should choose to do so explicitly and not default to it.
+`S` is **not** a way to stack unrelated channels. For data with many
+independent channels (e.g. fluorescence or multispectral microscopy), carry each
+channel on the frame (`F`) axis instead — chain a `reshape`/`transpose` so each
+channel becomes an independent grayscale image. This both fits `S ≤ 4` and
+preserves per-channel fidelity, since no cross-channel color transform is
+applied. The interleaved `[H, W, 3]` form is for genuine RGB color only, and
+should be chosen deliberately rather than by default.
 
 ## Supported data types
 
 `uint8`, `uint16`, `float16`, and `float32`.
 
-The sample bit depth recorded in the codestream's image header MUST match the
-array data type:
+The codestream's sample type (integer vs. float) and bit depth relate to the
+array data type as follows:
 
-| data type | `bits_per_sample` | float | exponent bits |
-| --------- | ----------------- | ----- | ------------- |
-| `uint8`   | 8                 | no    | —             |
-| `uint16`  | 16                | no    | —             |
-| `float16` | 16                | yes   | 5 (IEEE half) |
-| `float32` | 32                | yes   | 8 (IEEE single) |
+| data type | codestream sample type | `bits_per_sample` | exponent bits |
+| --------- | ---------------------- | ----------------- | ------------- |
+| `uint8`   | integer                | `1`–`8`           | —             |
+| `uint16`  | integer                | `1`–`16`          | —             |
+| `float16` | float                  | 16                | 5 (IEEE half) |
+| `float32` | float                  | 32                | 8 (IEEE single) |
 
-Decoders MUST return an error on a mismatch rather than rescale samples to the
-range of the array data type — for example, a 12-bit codestream MUST NOT be
-expanded to the full `uint16` range, since the rescaled values would silently
-differ from the values originally stored in the array. Note that the exponent
-bits distinguish `float16` from `uint16`: both have `bits_per_sample` 16, so a
-decoder MUST use the codestream's float flag and exponent-bit count, not the bit
-width alone, to select the array data type.
+- **Float data types** MUST use the exact bit depth shown (16 with 5 exponent
+  bits for `float16`, 32 with 8 for `float32`); a reduced float bit depth is not
+  supported. Note that `float16` and `uint16` both have `bits_per_sample` 16, so
+  a decoder MUST use the float flag and exponent-bit count, not the bit width
+  alone, to tell them apart.
+- **Integer data types** MAY use any bit depth up to the type's width. A depth
+  *below* the width losslessly stores data whose values fit in that many bits
+  (for example, `uint16` data in the range `0`–`4095` may be stored at
+  `bits_per_sample` 12), giving a smaller codestream. An encoder MUST NOT write
+  an integer bit depth larger than the array data type's width.
+
+**Value preservation (no rescaling).** A decoder MUST return the sample values
+exactly as stored, placed in the array data type without any rescaling. In
+particular, a sample stored at `bits_per_sample` `N` keeps its `0`–`2^N−1` value
+in the wider container; a decoder MUST NOT expand it to the array type's full
+range. (Equivalently, a decoder that normalizes samples to `[0, 1]` MUST map
+back using the codestream's `bits_per_sample`, `2^N−1`, not the array type's
+width.) A decoder that cannot preserve values this way MUST return an error
+rather than produce rescaled data. The bit depth is recorded in the codestream,
+so decoders never need the `configuration` to determine it.
 
 ## Sample layout and color
 
@@ -183,31 +198,26 @@ Samples are stored in C order, so for a chunk shape ending in `S` the channels
 are interleaved (the innermost, unit-stride axis). If a different in-memory
 channel order is required, use the `transpose` codec.
 
-Decoders MUST return samples in the color space signaled by the codestream's
-image header, inverting any codestream-internal transforms (XYB, YCbCr,
-chroma upsampling) as defined by the JPEG XL specification, and MUST NOT
-apply any further conversion toward a perceptual or display color space (for
-example forcing an sRGB gamma or applying an ICC-profile conversion). Note
-that many general-purpose JPEG XL APIs convert to a preferred or display
-profile by default; implementations of this codec must disable that. When
-JPEG XL is used losslessly, the decoded samples are bit-exact copies of the
-encoded array.
-
-Unlike the JPEG codec, this codec has **no** `encoded_color_space` or
-`subsampling` parameters: JPEG XL manages color internally within the
-codestream. 
+Decoders MUST return samples in the color space signaled by the codestream
+header — inverting the codestream's internal transforms (XYB, YCbCr, chroma
+upsampling) but applying no further conversion toward a display color space (no
+forced sRGB gamma, no ICC conversion). Many general-purpose JPEG XL APIs convert
+to a display profile by default and MUST have that disabled. Lossless decoding
+is bit-exact.
 
 > **Note:** JPEG XL can be lossy. Repeated decode/encode cycles compound
 > artifacts, and lossy compression is unsuitable for label/segmentation data.
 
 ## Orientation
 
-A JPEG XL codestream may record an EXIF-style image orientation (rotation/flip)
-in its header. Decoders for this codec **MUST NOT** apply that orientation
-transform: they MUST return samples in the stored pixel order, so that the
-decoded chunk matches the array's own axis order exactly. Any reorientation for
-display belongs to the OME-Zarr coordinate transforms of the surrounding array,
-not to this codec.
+A JPEG XL codestream can record an EXIF-style image orientation (rotation/flip)
+in its header, but the zarr specification is to not include this but instead 
+store such information as an reshape, transpose, or image transformation.
+If a codestream has an EXIF-style orientaiton, decoders for this codec 
+**MUST NOT** apply that orientation transform: they MUST return samples
+in the stored pixel order, so that the decoded chunk matches the array's
+own axis order exactly. Any reorientation for display belongs to the 
+OME-Zarr coordinate transforms of the surrounding array, not to this codec.
 
 Implementations built on general JPEG XL libraries that apply orientation by
 default MUST disable it (for example, `imagecodecs` decoders MUST pass
@@ -239,7 +249,12 @@ A single-channel 2-D tile is a `[H, W]` chunk encoded directly, with no
     "name": "regular",
     "configuration": { "chunk_shape": [256, 256] }
   },
-  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+  "codecs": [
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
+  ]
 }
 ```
 
@@ -256,7 +271,12 @@ not use it to stack unrelated channels (see [Channels](#channels-s)).
     "name": "regular",
     "configuration": { "chunk_shape": [256, 256, 3] }
   },
-  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+  "codecs": [
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
+  ]
 }
 ```
 
@@ -271,7 +291,12 @@ channel. The alpha channel is stored and returned as-is (not forced opaque).
     "name": "regular",
     "configuration": { "chunk_shape": [256, 256, 4] }
   },
-  "codecs": [{ "name": "jpegxl", "configuration": {} }]
+  "codecs": [
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
+  ]
 }
 ```
 
@@ -289,7 +314,10 @@ it to the innermost position, so `jpegxl` receives `[H, W, 3]`.
   },
   "codecs": [
     { "name": "transpose", "configuration": { "order": [1, 2, 0] } },
-    { "name": "jpegxl", "configuration": {} }
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
   ]
 }
 ```
@@ -297,7 +325,7 @@ it to the innermost position, so `jpegxl` receives `[H, W, 3]`.
 ### Multi-frame stack (`reshape`)
 
 The metadata below stores a `[1, 1, 32, 256, 256]` chunk (for example a
-`c, t, z, y, x` layout with unit `c` and `t`) as a single 32-frame JPEG XL
+`c, t, z, y, x` layout) as a single 32-frame JPEG XL
 image. The `reshape` codec drops the two leading unit dimensions to produce the
 `[32, 256, 256]` (`[F, H, W]`) native image shape.
 
@@ -309,7 +337,10 @@ image. The `reshape` codec drops the two leading unit dimensions to produce the
   },
   "codecs": [
     { "name": "reshape", "configuration": { "shape": [[2], [3], [4]] } },
-    { "name": "jpegxl", "configuration": {} }
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
   ]
 }
 ```
@@ -317,11 +348,18 @@ image. The `reshape` codec drops the two leading unit dimensions to produce the
 ### Many independent channels (compress each separately)
 
 For data with many independent measurement channels (e.g. fluorescence or
-multispectral microscopy), do not interleave them as `S`. Chunk the channel axis
-to 1 so each chunk holds a single channel, then use `reshape` to drop that unit
-axis, encoding each channel as an independent grayscale image. Here a
-`[c, z, y, x]` array chunked `[1, 32, 256, 256]` becomes a `[32, 256, 256]`
-grayscale frame stack, one per channel.
+multispectral microscopy), do not interleave them as `S`: the interleaved-sample
+form is limited to `S ≤ 4`, and `S = 3` applies an RGB color transform that is
+inappropriate for channels that are not real colors. Instead keep each channel
+as its own grayscale image, carried on the frame (`F`) axis. Because every frame
+is an independent grayscale image, per-channel fidelity is preserved (no
+cross-channel color transform) in either of the two layouts below.
+
+**One channel per chunk.** Chunk the channel axis to `1` so each chunk holds a
+single channel, and use `reshape` to drop that unit axis. A `[c, z, y, x]` array
+chunked `[1, 32, 256, 256]` becomes a `[32, 256, 256]` grayscale frame stack —
+one JPEG XL image per channel. This gives the finest access granularity (a
+single channel can be read without touching the others).
 
 ```json
 {
@@ -331,27 +369,34 @@ grayscale frame stack, one per channel.
   },
   "codecs": [
     { "name": "reshape", "configuration": { "shape": [[1], [2], [3]] } },
-    { "name": "jpegxl", "configuration": {} }
+    {
+      "name": "jpegxl",
+      "configuration": { ... }
+    }
   ]
 }
 ```
 
-### Lossy encoding with encoder hints
-
-Encoder parameters are recorded in `configuration` purely as hints; a decoder
-reconstructs the array from the codestream regardless of them. Here a `[H, W]`
-tile is encoded lossily at Butteraugli `distance` 1.0.
+**Multiple channels per chunk (channels and frames combined).** Alternatively,
+keep several channels in one chunk and fold the channel and z axes together onto
+the frame axis; `reshape` un-folds them back into separate channel and z axes on
+decode. A `[c, z, y, x]` array chunked `[3, 32, 256, 256]` (3 channels ×
+32 z-slices) becomes a `[96, 256, 256]` grayscale frame stack (`F = 3 × 32`),
+where the `[[0, 1], [2], [3]]` reshape maps input dimensions `c` and `z` onto the
+single frame axis (in C order, so frame `f = c·32 + z`). This packs a whole
+volume into one JPEG XL image (fewer, larger chunks). The channels remain separate grayscale frames preserving per-channel fidelity exactly as the per-channel layout does.
 
 ```json
 {
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [256, 256] }
+    "configuration": { "chunk_shape": [3, 32, 256, 256] }
   },
   "codecs": [
+    { "name": "reshape", "configuration": { "shape": [[0, 1], [2], [3]] } },
     {
       "name": "jpegxl",
-      "configuration": { "lossless": false, "distance": 1.0, "effort": 7 }
+      "configuration": { ... }
     }
   ]
 }
