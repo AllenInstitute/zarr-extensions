@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "const": "nanovdb"
+    },
+    "configuration": {
+      "type": "object",
+      "description": "NanoVDB encoding parameters, recorded so the encoding is deliberate and reproducible across the chunks of an array. Decoders MUST derive grid geometry, grid type, and tree configuration from the buffer itself and MUST NOT rely on these members to parse it, but MUST verify consistency with them and with the array metadata.",
+      "properties": {
+        "grid_type": {
+          "type": "string",
+          "enum": [
+            "Float",
+            "Double",
+            "Int16",
+            "Int32",
+            "Int64",
+            "UInt32",
+            "Mask",
+            "Fp4",
+            "Fp8",
+            "Fp16",
+            "FpN",
+            "Vec3f",
+            "Vec3d",
+            "Vec4f",
+            "Vec4d"
+          ],
+          "description": "NanoVDB GridType of the encoded grid. Not redundant with the array data_type: Fp4, Fp8, Fp16, and FpN encode a float32 array at reduced precision, and the Vec types pair a float32 or float64 array with an innermost component dimension of extent 3 or 4."
+        },
+        "tree_config": {
+          "type": "string",
+          "const": "5-4-3",
+          "description": "Node branching factors as Log2Dim values from root side to leaf. 5-4-3 is OpenVDB's default: 8^3 leaves, 128^3 lower internal nodes, 4096^3 upper internal nodes."
+        },
+        "index_space": {
+          "type": "string",
+          "enum": ["global", "chunk_local"],
+          "description": "Whether each chunk's grid uses the array's global index coordinates or is rebased to the chunk origin. 'global' is required for cross-chunk grid coherence."
+        },
+        "stats": {
+          "type": "string",
+          "enum": ["none", "bbox", "minmax", "all"],
+          "description": "Per-node statistics carried by the grid. 'bbox' includes active bounding boxes, 'minmax' adds per-node minimum and maximum, 'all' adds average and standard deviation."
+        },
+        "lossless": {
+          "type": "boolean",
+          "description": "Whether decoding reproduces the encoded array exactly. When true, tolerance MUST be 0 and grid_type MUST NOT be a quantized type."
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum absolute deviation from the background value at which the encoder may leave a voxel inactive. 0 means only voxels exactly equal to the background may be dropped. This is a topology threshold, not a value threshold."
+        }
+      },
+      "required": [
+        "grid_type",
+        "tree_config",
+        "index_space",
+        "stats",
+        "lossless",
+        "tolerance"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "lossless": { "const": true } },
+            "required": ["lossless"]
+          },
+          "then": {
+            "properties": {
+              "tolerance": { "const": 0 },
+              "grid_type": {
+                "not": { "enum": ["Fp4", "Fp8", "Fp16", "FpN"] }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "lossless": { "const": false } },
+            "required": ["lossless"]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": { "tolerance": { "exclusiveMinimum": 0 } },
+                "required": ["tolerance"]
+              },
+              {
+                "properties": {
+                  "grid_type": { "enum": ["Fp4", "Fp8", "Fp16", "FpN"] }
+                },
+                "required": ["grid_type"]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "required": ["name", "configuration"],
+  "additionalProperties": false
+}
