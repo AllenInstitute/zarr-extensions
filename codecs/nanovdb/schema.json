@@ -83,24 +83,13 @@
           "const": [5, 4, 3],
           "description": "Node branching factors as the Log2Dim of each level from the root side to the leaf. [5, 4, 3] is the only registered configuration: 8^3 leaves, 128^3 lower internal nodes, 4096^3 upper internal nodes. It is the only configuration any released NanoVDB implementation reads or writes, and a reader cannot recover the configuration from the buffer, so a wrong assumption is a silent misread. Any future value must also have exactly three entries; NanoVDB's tree depth is not parameterized."
         },
-        "index_space": {
-          "type": "string",
-          "enum": ["global", "chunk_local"],
-          "description": "Whether each chunk's grid uses the array's global index coordinates or is rebased to the chunk origin. 'global' is required for cross-chunk grid coherence."
-        },
         "stats": {
           "type": "string",
           "enum": ["none", "bbox", "minmax", "all"],
           "description": "Per-node statistics carried by the grid. 'bbox' includes active bounding boxes, 'minmax' adds per-node minimum and maximum, 'all' adds average and standard deviation."
         }
       },
-      "required": [
-        "dimension_roles",
-        "grid_type",
-        "tree_config",
-        "index_space",
-        "stats"
-      ],
+      "required": ["dimension_roles", "grid_type", "tree_config", "stats"],
       "additionalProperties": false
     }
   },

@@ -10,8 +10,8 @@ sparse voxels are stored in a shallow tree. For volumes that are mostly
 background (masks, sparse labels, level sets, distance fields, sparse vector
 fields), the buffer is both a compact encoding and a spatial index that a reader
 can traverse directly. This codec constrains how each chunk maps to a grid so
-that the grids of all chunks share one index space and node lattice; see
-[Grid coherence across chunks](#grid-coherence-across-chunks).
+that the grids of all chunks share one node lattice and compose into one logical
+volume; see [Grid coherence across chunks](#grid-coherence-across-chunks).
 
 > This document is a proposed extension. It is licensed under the
 > [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/).
@@ -110,12 +110,6 @@ grid header nor the `nanovdb::io` file header, which records node and tile
 _counts_ only. Any future value MUST also have exactly three entries: NanoVDB's
 tree depth is not parameterized.
 
-### `index_space`
-
-One of `global` or `chunk_local`: whether each chunk's grid uses the array's
-global index coordinates or is rebased to the chunk's own origin. `global` is
-REQUIRED for [grid coherence](#grid-coherence-across-chunks) and SHOULD be used.
-
 ### `stats`
 
 One of `none`, `bbox`, `minmax`, `all`: the per-node statistics the grid
@@ -193,9 +187,8 @@ its own. NanoVDB places red in the lowest byte, and the `channel` index gives
 the component: `0` red, `1` green, `2` blue, `3` alpha. With an extent of `3` an
 encoder MUST write an alpha of `255`, and a decoder MUST discard the alpha byte,
 so a three-channel array still round-trips exactly. The background is the word
-whose red, green and blue bytes all equal
-`fill_value`, with alpha `255` at an extent of `3` and `fill_value` at an extent
-of `4`.
+whose red, green and blue bytes all equal `fill_value`, with alpha `255` at an
+extent of `3` and `fill_value` at an extent of `4`.
 
 A `uint8` array is `UInt8` when it has no `channel` dimension and `RGBA8` when
 it has one of extent `3` or `4`; this is why `grid_type` is declared rather than
@@ -254,10 +247,14 @@ grids, laid out as `nanovdb::mergeGrids` produces them:
 An array using this codec MUST satisfy all of the following. Each is checkable
 from the array metadata and chunk buffers alone.
 
-1. **One index space.** Each chunk's grids MUST express voxel coordinates in the
-   global index space of this codec's input: the `z`, `y`, `x` indices
-   `[k, j, i]` occupy NanoVDB coordinate `(i, j, k)` regardless of which chunk
-   holds them. Grids MUST NOT be rebased to a chunk-local origin.
+1. **Chunk-local coordinates, one upper node per grid.** A grid MUST place its
+   chunk's first voxel at NanoVDB coordinate `(0, 0, 0)`: the chunk-local `z`,
+   `y`, `x` indices `[k, j, i]` occupy NanoVDB coordinate `(i, j, k)`. A reader
+   recovers a global coordinate by adding the chunk origin, which it already
+   computed in order to locate the chunk.
+
+   The spatial chunk extents MUST therefore not exceed the upper internal node
+   extent (4096 maximum chunk size for `[5, 4, 3]`,  `1 << (tree_config[0] + tree_config[1] + tree_config[2])` in general), so that every grid has exactly **one** upper node, whose origin is `(0, 0, 0)` and which the root reaches through a single tile with key `0`.
 
 2. **Leaf-aligned chunk grid.** The chunk extent along each of the `z`, `y` and
    `x` dimensions, and the chunk grid origin in each of them, MUST be an integer
@@ -267,10 +264,7 @@ from the array metadata and chunk buffers alone.
 3. **Node-aligned chunk shape (recommended).** The `z`, `y` and `x` chunk
    extents SHOULD additionally be an integer multiple of, or an integer divisor
    of, the lower internal node extent `1 << (tree_config[1] + tree_config[2])`
-   (128 for `[5, 4, 3]`). A chunk of exactly one node extent is a subtree with a
-   dense top level, traversable without searching the root node's tile table;
-   other shapes satisfying requirement 2 are conformant but require a root-level
-   lookup.
+   (128 for `[5, 4, 3]`), so that no lower internal node is only partly covered.
 
 4. **Disjoint coverage.** Each of a chunk's grids MUST contain active voxels
    only within that chunk's spatial bounds, so for every index along the `grid`
@@ -293,7 +287,7 @@ A voxel is active if and only if its value differs from the array's
 Activity is therefore fully determined by the array and its `fill_value`. An
 encoder has no discretion, two conformant encoders produce the same active set,
 and decoding reproduces the input bit-for-bit for every non-quantized
-`grid_type`. 
+`grid_type`.
 
 Choosing which voxels to store is the writer's business, not the codec's: to
 drop a voxel write `fill_value` into it before encoding.
@@ -355,7 +349,6 @@ readers SHOULD write one of those rather than `none`.
         "dimension_roles": ["z", "y", "x"],
         "grid_type": "Float",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "minmax"
       }
     },
@@ -399,7 +392,6 @@ A segmentation mask, topology only:
         "dimension_roles": ["z", "y", "x"],
         "grid_type": "Mask",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "bbox"
       }
     }
@@ -436,7 +428,6 @@ Quantized to 16 bits per voxel:
         "dimension_roles": ["z", "y", "x"],
         "grid_type": "Fp16",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "all"
       }
     },
@@ -481,7 +472,6 @@ covers `channel` in full:
         "dimension_roles": ["z", "y", "x", "channel"],
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "bbox"
       }
     },
@@ -526,7 +516,6 @@ grids per chunk buffer.
         "dimension_roles": ["grid", "z", "y", "x"],
         "grid_type": "Float",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "minmax"
       }
     },
@@ -570,7 +559,6 @@ The same with a three-component value per voxel, `[T, Z, Y, X, C]`:
         "dimension_roles": ["grid", "z", "y", "x", "channel"],
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "bbox"
       }
     },
@@ -622,7 +610,6 @@ codec's input `[t, z, y, x, c]`. `dimension_names` is in the array's order and
         "dimension_roles": ["grid", "z", "y", "x", "channel"],
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
-        "index_space": "global",
         "stats": "bbox"
       }
     },
