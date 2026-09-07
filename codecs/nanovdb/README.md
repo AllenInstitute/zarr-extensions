@@ -46,10 +46,26 @@ component dimension. See [Supported data types](#supported-data-types).
 
 ### `tree_config`
 
-The node branching factors of the tree, written as the `Log2Dim` values from
-root side to leaf, hyphen-separated. MUST be `5-4-3` (OpenVDB's default: 8³
-leaves, 128³ lower and 4096³ upper internal nodes); declared explicitly so that
-other configurations can be registered later without ambiguity.
+An array of the tree's node branching factors, as the `Log2Dim` of each level
+from the root side to the leaf. MUST be `[5, 4, 3]`, giving 8³ leaves, 128³
+lower internal nodes and 4096³ upper internal nodes. Every extent the
+[grid coherence](#grid-coherence-across-chunks) requirements refer to derives
+from this array: the leaf extent is `1 << tree_config[2]` and the lower
+internal node extent is `1 << (tree_config[1] + tree_config[2])`.
+
+`[5, 4, 3]` is the only registered configuration, for two reasons beyond its
+being OpenVDB's default:
+
+- It is the only one the official released NanoVDB implementation reads or
+  writes.
+- A reader cannot recover the configuration from the buffer.
+
+The field is therefore declared explicitly rather than assumed, so that a
+reader can reject what it does not implement instead of misreading it, and so
+that another configuration can be registered later without ambiguity. Any
+future value MUST also have exactly three entries: NanoVDB's tree depth is not
+parameterized, and the [grid coherence](#grid-coherence-across-chunks)
+requirements assume the three levels above.
 
 ### `index_space`
 
@@ -123,7 +139,7 @@ Scalar grids take a rank-3 chunk:
 | `int32`          | `Int32`                              |                                               |
 | `int64`          | `Int64`                              |                                               |
 | `uint32`         | `UInt32`                             |                                               |
-| `bool`           | `Mask`                               | Topology only; the value *is* the active mask |
+| `bool`           | `Mask`                               | Topology only; the value _is_ the active mask |
 
 Vector grids take a rank-4 chunk whose innermost dimension is the component
 dimension, with extent `c`:
@@ -154,7 +170,7 @@ For vector grids, two consequences of Zarr's `fill_value` being a scalar:
   `fill_value`; a background with unequal components cannot be expressed in the
   array metadata and MUST NOT be written.
 - A voxel is active or inactive as a whole. An encoder MUST treat a voxel as
-  non-background if *any* component differs from `fill_value` by more than
+  non-background if _any_ component differs from `fill_value` by more than
   `tolerance`.
 
 > [!NOTE]
@@ -197,12 +213,13 @@ chunk buffers alone.
 
 2. **Leaf-aligned chunk grid.** Every spatial chunk dimension, and the chunk
    grid origin in each spatial dimension, MUST be an integer multiple of the
-   leaf extent implied by `tree_config` (8 for `5-4-3`), so that no leaf node
+   leaf extent `1 << tree_config[2]` (8 for `[5, 4, 3]`), so that no leaf node
    straddles a chunk boundary.
 
 3. **Node-aligned chunk shape (recommended).** Spatial chunk dimensions SHOULD
    additionally be an integer multiple of, or an integer divisor of, the lower
-   internal node extent (128 for `5-4-3`). A chunk that is an exact node extent
+   internal node extent `1 << (tree_config[1] + tree_config[2])` (128 for
+   `[5, 4, 3]`). A chunk that is an exact node extent
    is a clean subtree with a dense top level, addressable without searching the
    root node's tile table; other shapes satisfying requirement 2 remain
    conformant at the cost of a root-level lookup per traversal. The component
@@ -251,7 +268,7 @@ reject such a chain when the array metadata is parsed:
    ([`transpose`](../transpose/README.md), [`reshape`](../reshape/README.md))
    break requirement 1 of [grid coherence](#grid-coherence-across-chunks),
    which ties NanoVDB coordinates to array index coordinates.
-2. `array -> array` codecs decode *after* the `array -> bytes` codec. A reader
+2. `array -> array` codecs decode _after_ the `array -> bytes` codec. A reader
    taking the pass-through path below never materializes a dense array for them
    to operate on, so permitting them would forfeit that optimization for
    exactly the arrays this codec serves. This excludes even value-domain codecs
@@ -293,7 +310,7 @@ against a background of `0.0`, with per-node min/max statistics:
       "name": "nanovdb",
       "configuration": {
         "grid_type": "Float",
-        "tree_config": "5-4-3",
+        "tree_config": [5, 4, 3],
         "index_space": "global",
         "stats": "minmax",
         "lossless": true,
@@ -314,7 +331,7 @@ A segmentation mask, storing topology only:
       "name": "nanovdb",
       "configuration": {
         "grid_type": "Mask",
-        "tree_config": "5-4-3",
+        "tree_config": [5, 4, 3],
         "index_space": "global",
         "stats": "bbox",
         "lossless": true,
@@ -334,7 +351,7 @@ Thresholded fluorescence, quantized and sparsified with a recorded tolerance:
       "name": "nanovdb",
       "configuration": {
         "grid_type": "Fp16",
-        "tree_config": "5-4-3",
+        "tree_config": [5, 4, 3],
         "index_space": "global",
         "stats": "all",
         "lossless": false,
@@ -364,7 +381,7 @@ full by the chunk shape, so every chunk holds whole vectors:
       "name": "nanovdb",
       "configuration": {
         "grid_type": "Vec3f",
-        "tree_config": "5-4-3",
+        "tree_config": [5, 4, 3],
         "index_space": "global",
         "stats": "bbox",
         "lossless": true,
@@ -388,7 +405,7 @@ expected decoded values and active/inactive topology.
   built on it, independently of Zarr.
 - Grids can be produced from OpenVDB grids with `nanovdb::createNanoGrid`, and
   from dense arrays with NanoVDB's build tools. OpenVDB's own `.vdb`
-  serialization is *not* interchangeable with a NanoVDB buffer and must be
+  serialization is _not_ interchangeable with a NanoVDB buffer and must be
   converted.
 - NanoVDB buffers are versioned and self-describing, so a reader can detect a
   buffer written by a newer NanoVDB than it supports and fail cleanly.

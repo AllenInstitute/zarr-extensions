@@ -32,9 +32,15 @@
           "description": "NanoVDB GridType of the encoded grid. Not redundant with the array data_type: Fp4, Fp8, Fp16, and FpN encode a float32 array at reduced precision, and the Vec types pair a float32 or float64 array with an innermost component dimension of extent 3 or 4."
         },
         "tree_config": {
-          "type": "string",
-          "const": "5-4-3",
-          "description": "Node branching factors as Log2Dim values from root side to leaf. 5-4-3 is OpenVDB's default: 8^3 leaves, 128^3 lower internal nodes, 4096^3 upper internal nodes."
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "const": [5, 4, 3],
+          "description": "Node branching factors as the Log2Dim of each level from the root side to the leaf. [5, 4, 3] is the only registered configuration: 8^3 leaves, 128^3 lower internal nodes, 4096^3 upper internal nodes. It is the only configuration any released NanoVDB implementation reads or writes, and a reader cannot recover the configuration from the buffer, so a wrong assumption is a silent misread. Any future value must also have exactly three entries; NanoVDB's tree depth is not parameterized."
         },
         "index_space": {
           "type": "string",
