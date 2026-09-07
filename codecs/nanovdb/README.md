@@ -5,20 +5,19 @@ Defines an `array -> bytes` codec that encodes an array chunk as one or more
 grid buffer.
 
 NanoVDB is the linearized, pointer-free serialization of an
-[OpenVDB](https://www.openvdb.org/) tree, in which regions holding a single
-repeated value are stored once as a tile rather than as voxels. For volumes
-that are mostly background (masks, sparse labels, level sets, distance fields,
-sparse vector fields), the buffer is both a compact encoding and a spatial
-index that a reader can traverse directly. This codec constrains how each
-chunk maps to a grid so that the grids of all chunks share one index space and
-node lattice; see [Grid coherence across chunks](#grid-coherence-across-chunks).
+[OpenVDB](https://www.openvdb.org/) tree, in which the locations and values of
+sparse voxels are stored in a shallow tree. For volumes that are mostly
+background (masks, sparse labels, level sets, distance fields, sparse vector
+fields), the buffer is both a compact encoding and a spatial index that a reader
+can traverse directly. This codec constrains how each chunk maps to a grid so
+that the grids of all chunks share one index space and node lattice; see
+[Grid coherence across chunks](#grid-coherence-across-chunks).
 
 > This document is a proposed extension. It is licensed under the
 > [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/).
 
-> [!NOTE]
-> **Status: draft**, opened to solicit feedback. The reference implementation
-> is in progress; see
+> [!NOTE] **Status: draft**, opened to solicit feedback. The reference
+> implementation is in progress; see
 > [Interoperability and compatibility](#interoperability-and-compatibility).
 
 ## Codec name
@@ -75,6 +74,13 @@ dimension order reaches it through a preceding
 `dimension_names`. OME-Zarr `[t, c, z, y, x]` with `c = 3` requires
 `order: [0, 2, 3, 4, 1]`; an `[x, y, z]` array requires `order: [2, 1, 0]`.
 
+Most OME-Zarr arrays need no transpose. A `c` axis of independent channels —
+what that axis conventionally holds — takes the `grid` role, and
+`[t, c, z, y, x]` as `["grid", "grid", "z", "y", "x"]` is already in canonical
+order, giving one grid per `(t, c)` pair. A transpose is needed only when `c`
+holds the vector components of a single quantity, so that it must take the
+`channel` role and move innermost.
+
 A role states only how this codec encodes a dimension, never what it means: a
 `grid` dimension need not be time, nor a `channel` dimension vector components.
 Meaning belongs in `dimension_names` or a convention above Zarr.
@@ -82,11 +88,12 @@ Meaning belongs in `dimension_names` or a convention above Zarr.
 ### `grid_type`
 
 The NanoVDB `GridType` of the encoded grid: one of `Float`, `Double`, `Int16`,
-`Int32`, `Int64`, `UInt32`, `Mask`, `Fp4`, `Fp8`, `Fp16`, `FpN`, `Vec3f`,
-`Vec3d`, `Vec4f`, `Vec4d`. Not derivable from the array's `data_type`: the
-quantized types (`Fp4`, `Fp8`, `Fp16`, `FpN`) encode a `float32` array at
-reduced precision, and the vector types pair a `float32` or `float64` array
-with a `channel` dimension. See
+`Int32`, `Int64`, `UInt8`, `UInt32`, `Mask`, `Fp4`, `Fp8`, `Fp16`, `FpN`,
+`Vec3f`, `Vec3d`, `Vec4f`, `Vec4d`, `RGBA8`. Not derivable from the array's
+`data_type`: the quantized types (`Fp4`, `Fp8`, `Fp16`, `FpN`) encode a
+`float32` array at reduced precision, the vector types pair a `float32` or
+`float64` array with a `channel` dimension, and `RGBA8` packs a `uint8`
+`channel` dimension into one 32-bit word. See
 [Supported data types](#supported-data-types).
 
 ### `tree_config`
@@ -107,8 +114,7 @@ tree depth is not parameterized.
 
 One of `global` or `chunk_local`: whether each chunk's grid uses the array's
 global index coordinates or is rebased to the chunk's own origin. `global` is
-REQUIRED for [grid coherence](#grid-coherence-across-chunks) and SHOULD be
-used.
+REQUIRED for [grid coherence](#grid-coherence-across-chunks) and SHOULD be used.
 
 ### `stats`
 
@@ -118,40 +124,43 @@ and maximum values; `all` adds average and standard deviation.
 
 ### `lossless`
 
-A boolean indicating whether decoding reproduces the encoded array exactly.
-When `true`, `tolerance` MUST be `0` and `grid_type` MUST NOT be a quantized
-type. When `false`, `tolerance` MUST be greater than `0` or `grid_type` MUST be
-a quantized type.
+A boolean indicating whether decoding reproduces the encoded array exactly. When
+`true`, `tolerance` MUST be `0` and `grid_type` MUST NOT be a quantized type.
+When `false`, `tolerance` MUST be greater than `0` or `grid_type` MUST be a
+quantized type.
 
 ### `tolerance`
 
 A number ≥ 0: the maximum absolute deviation from the background value at which
-the encoder may leave a voxel inactive. `0` permits dropping only voxels
-exactly equal to the background. See
+the encoder may leave a voxel inactive. `0` permits dropping only voxels exactly
+equal to the background. See
 [Sparsity and losslessness](#sparsity-and-losslessness).
 
 ## Supported chunk shapes
 
-The chunk's rank MUST equal the length of
-[`dimension_roles`](#dimension_roles). Each dimension is constrained by its
-role:
+The chunk's rank MUST equal the length of [`dimension_roles`](#dimension_roles).
+Each dimension is constrained by its role:
 
-| role      | chunk extent                                                                                                                        |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `grid`    | Any extent. The buffer holds one grid per index, so the grid count is the product of the chunk extents along all `grid` dimensions. |
-| `z y x`   | Leaf-aligned, and node-aligned where practical: requirements 2 and 3 of [grid coherence](#grid-coherence-across-chunks).            |
-| `channel` | MUST equal the array extent along that dimension (requirement 6).                                                                   |
+- `grid` — any extent. The buffer holds one grid per index, so the grid count is
+  the product of the chunk extents along all `grid` dimensions.
+- `z y x` — leaf-aligned, and node-aligned where practical: requirements 2 and 3
+  of [grid coherence](#grid-coherence-across-chunks). The innermost spatial
+  dimension is the NanoVDB `x` axis.
+- `channel` — MUST be extent 1, 3, or 4 as NanoVDB only supports scalar, Vec3,
+  Vec4, or uint32 RGBA types.
 
-The innermost spatial dimension is the NanoVDB `x` axis. Writing `t` for the
-index along a single `grid` dimension and `c` for the `channel` index:
+Writing `t` for the index along a single `grid` dimension and `c` for the
+`channel` index:
 
-| `dimension_roles`                | chunk shape           | grid value | grid within buffer | NanoVDB coordinate                                      |
-| -------------------------------- | --------------------- | ---------- | ------------------ | ------------------------------------------------------- |
-| `["z","y","x"]`                  | `[nz, ny, nx]`        | scalar     | the only grid      | `[k, j, i]` → `(i,j,k)`                                 |
-| `["z","y","x","channel"]`, `c=1` | `[nz, ny, nx, 1]`     | scalar     | the only grid      | `[k, j, i, 0]` → `(i,j,k)`                              |
-| `["z","y","x","channel"]`, `c=3` | `[nz, ny, nx, 3]`     | `Vec3`     | the only grid      | `[k, j, i, c]` → `(i,j,k)` component `c`                |
-| `["grid","z","y","x"]`           | `[nt, nz, ny, nx]`    | scalar     | grid `t`           | `[t, k, j, i]` → `(i,j,k)` in grid `t`                  |
-| `["grid","z","y","x","channel"]` | `[nt, nz, ny, nx, c]` | `c`-vector | grid `t`           | `[t, k, j, i, c]` → `(i,j,k)` component `c` in grid `t` |
+| `dimension_roles`                     | chunk shape           | grid value       | grid within buffer | NanoVDB coordinate                                      |
+| ------------------------------------- | --------------------- | ---------------- | ------------------ | ------------------------------------------------------- |
+| `["z","y","x"]`                       | `[nz, ny, nx]`        | scalar           | the only grid      | `[k, j, i]` → `(i,j,k)`                                 |
+| `["z","y","x","channel"]`, `c=1`      | `[nz, ny, nx, 1]`     | scalar           | the only grid      | `[k, j, i, 0]` → `(i,j,k)`                              |
+| `["z","y","x","channel"]`, `c=3`      | `[nz, ny, nx, 3]`     | `Vec3`           | the only grid      | `[k, j, i, c]` → `(i,j,k)` component `c`                |
+| `["grid","z","y","x"]`                | `[nt, nz, ny, nx]`    | scalar           | grid `t`           | `[t, k, j, i]` → `(i,j,k)` in grid `t`                  |
+| `["grid","z","y","x","channel"]`, c=1 | `[nt, nz, ny, nx, c]` | scalar           | grid `t`           | `[t, k, j, i, c]` → `(i,j,k)` in grid `t`               |
+| `["grid","z","y","x","channel"]`, c=3 | `[nt, nz, ny, nx, c]` | `Vec3` or `RGBA` | grid `t`           | `[t, k, j, i, c]` → `(i,j,k)` component `c` in grid `t` |
+| `["grid","z","y","x","channel"]`, c=4 | `[nt, nz, ny, nx, c]` | `Vec4` or `RGBA` | grid `t`           | `[t, k, j, i, c]` → `(i,j,k)` component `c` in grid `t` |
 
 Encoders and decoders MUST return an error if the roles are not in the required
 order, if the rank disagrees with `dimension_roles`, if the `channel` extent
@@ -165,13 +174,14 @@ array-to-bytes codec within the
 
 ## Supported data types
 
-Scalar grids take an input with no `channel` dimension, or a `channel`
-dimension of extent `1`:
+Scalar grids take an input with no `channel` dimension, or a `channel` dimension
+of extent `1`:
 
 | Zarr `data_type` | `grid_type`                          | Notes                                         |
 | ---------------- | ------------------------------------ | --------------------------------------------- |
 | `float32`        | `Float`, `Fp4`, `Fp8`, `Fp16`, `FpN` | Quantized types are lossy                     |
 | `float64`        | `Double`                             |                                               |
+| `uint8`          | `UInt8`                              |                                               |
 | `int16`          | `Int16`                              |                                               |
 | `int32`          | `Int32`                              |                                               |
 | `int64`          | `Int64`                              |                                               |
@@ -186,16 +196,24 @@ Vector grids take a `channel` dimension of extent `c`:
 | `float64`        | `3` | `Vec3d`     |
 | `float32`        | `4` | `Vec4f`     |
 | `float64`        | `4` | `Vec4d`     |
+| `uint8`          | `3` | `RGBA8`     |
+| `uint8`          | `4` | `RGBA8`     |
 
 A `channel` extent of `2`, or greater than `4`, MUST be rejected. Such an axis
 SHOULD be given the `grid` role instead, placing each index on its own grid.
 
-Data types not listed above are supported only through promotion:
-implementations MAY promote a narrower data type to a wider `grid_type` (for
-example `uint8` or `int8` to `Int16`), but MUST record the `grid_type` actually
-written and MUST NOT promote across the scalar/vector boundary. Zarr data types
-with no NanoVDB counterpart (complex and variable-length types among them) are
-not supported.
+`RGBA8` is not a vector value type but a single 32-bit word, so it has rules of
+its own. NanoVDB places red in the lowest byte, and the `channel` index gives
+the component: `0` red, `1` green, `2` blue, `3` alpha. With an extent of `3` an
+encoder MUST write an alpha of `255`, and a decoder MUST discard the alpha byte,
+so a three-channel array still round-trips exactly and `lossless: true` remains
+available. The background is the word whose red, green and blue bytes all equal
+`fill_value`, with alpha `255` at an extent of `3` and `fill_value` at an extent
+of `4`.
+
+A `uint8` array is `UInt8` when it has no `channel` dimension and `RGBA8` when
+it has one of extent `3` or `4`; this is why `grid_type` is declared rather than
+derived from `data_type`.
 
 Matrix grids, which would need two `channel` dimensions, and integer vector
 grids (`Vec3i` and similar) are out of scope.
@@ -208,10 +226,9 @@ For vector grids, `fill_value` being a scalar means:
   non-background if _any_ component differs from `fill_value` by more than
   `tolerance`.
 
-> [!NOTE]
-> **Open question for review.** `stats: minmax` is undefined for vector grids,
-> which have no natural total order. Componentwise minima and maxima are the
-> plausible reading; the conservative option is to restrict vector grids to
+> [!NOTE] **Open question for review.** `stats: minmax` is undefined for vector
+> grids, which have no natural total order. Componentwise minima and maxima are
+> the plausible reading; the conservative option is to restrict vector grids to
 > `stats: none` or `bbox`.
 
 ## Format and algorithm
@@ -231,9 +248,9 @@ NanoVDB's grid builders, written verbatim.
 
 #### Grid enumeration
 
-An input whose [`dimension_roles`](#dimension_roles) contain no `grid`
-dimension encodes one grid per chunk. Otherwise the chunk's buffer holds
-`mGridCount` grids, laid out as `nanovdb::mergeGrids` produces them:
+An input whose [`dimension_roles`](#dimension_roles) contain no `grid` dimension
+encodes one grid per chunk. Otherwise the chunk's buffer holds `mGridCount`
+grids, laid out as `nanovdb::mergeGrids` produces them:
 
 - The grid count MUST equal the product of the chunk's extents along its `grid`
   dimensions, and MUST be recorded as `mGridCount` in **every** grid's header,
@@ -244,68 +261,57 @@ dimension encodes one grid per chunk. Otherwise the chunk's buffer holds
 - Grid `n` MUST record `mGridIndex` equal to `n`, where `n` is the C-order
   (row-major, last `grid` dimension varying fastest) ravel of the chunk-local
   indices along the `grid` dimensions.
-- Readers MUST resolve a grid by index, never by `mGridName`, which is
-  unconstrained. Writers MAY set names.
+- Readers MUST resolve a grid by index. Writers MAY set names, via `mGridName`,
+  but it is unconstrained, so readers MUST not rely on them.
 
 ### Grid coherence across chunks
 
 An array using this codec MUST satisfy all of the following. Each is checkable
 from the array metadata and chunk buffers alone.
 
-1. **One index space.** Each chunk's grids MUST express voxel coordinates in
-   the global index space of this codec's input: the `z`, `y`, `x` indices
+1. **One index space.** Each chunk's grids MUST express voxel coordinates in the
+   global index space of this codec's input: the `z`, `y`, `x` indices
    `[k, j, i]` occupy NanoVDB coordinate `(i, j, k)` regardless of which chunk
-   holds them. Grids MUST NOT be rebased to a chunk-local origin. A preceding
-   [`transpose`](../transpose/README.md) composes a constant permutation onto
-   this mapping: the array coordinate is recovered from the NanoVDB coordinate
-   by `order`.
+   holds them. Grids MUST NOT be rebased to a chunk-local origin.
 
 2. **Leaf-aligned chunk grid.** The chunk extent along each of the `z`, `y` and
-   `x` dimensions, and the chunk grid origin in each of them, MUST be an
-   integer multiple of the leaf extent `1 << tree_config[2]` (8 for
-   `[5, 4, 3]`), so that no leaf node straddles a chunk boundary.
+   `x` dimensions, and the chunk grid origin in each of them, MUST be an integer
+   multiple of the leaf extent `1 << tree_config[2]` (8 for `[5, 4, 3]`), so
+   that no leaf node straddles a chunk boundary.
 
 3. **Node-aligned chunk shape (recommended).** The `z`, `y` and `x` chunk
    extents SHOULD additionally be an integer multiple of, or an integer divisor
-   of, the lower internal node extent
-   `1 << (tree_config[1] + tree_config[2])` (128 for `[5, 4, 3]`). A chunk of
-   exactly one node extent is a subtree with a dense top level, traversable
-   without searching the root node's tile table; other shapes satisfying
-   requirement 2 are conformant but require a root-level lookup.
-
-   Requirements 2 and 3 constrain only the three spatial dimensions; a
-   `channel` dimension is governed by requirement 6 and a `grid` dimension by
-   requirement 7. Where a `transpose` precedes this codec the constrained
-   extents are `chunk_shape[order[i]]` for the relevant `i`, since `transpose`
-   permutes extents without changing them.
+   of, the lower internal node extent `1 << (tree_config[1] + tree_config[2])`
+   (128 for `[5, 4, 3]`). A chunk of exactly one node extent is a subtree with a
+   dense top level, traversable without searching the root node's tile table;
+   other shapes satisfying requirement 2 are conformant but require a root-level
+   lookup.
 
 4. **Disjoint coverage.** Each of a chunk's grids MUST contain active voxels
    only within that chunk's spatial bounds, so for every index along the `grid`
-   dimensions the array's active set is the disjoint union of its chunks'
-   active sets.
+   dimensions the array's active set is the disjoint union of its chunks' active
+   sets.
 
-5. **Uniform configuration.** Every grid of every chunk of an array MUST use
-   the same `grid_type`, `tree_config`, `stats`, and background value.
+5. **Uniform configuration.** Every grid of every chunk of an array MUST use the
+   same `grid_type`, `tree_config`, `stats`, and background value.
 
-6. **Whole vectors per chunk.** The chunk extent along a `channel` dimension
-   MUST equal the array extent along it, so that no chunk holds a partial
-   vector.
-
-7. **Grids addressable by index.** A chunk's grid count MUST equal the product
-   of its extents along the `grid` dimensions, and grid `n` of the buffer MUST
-   correspond to the C-order ravel of the chunk-local `grid` indices, as
-   specified in [Grid enumeration](#grid-enumeration).
+6. **Grids addressable by index.** A chunk's grid count MUST equal the product
+   of its extents along the `grid` dimensions see
+   [Grid enumeration](#grid-enumeration).
 
 ### Sparsity and losslessness
 
 Decoding produces the grid's active values composited over the array's
 `fill_value`: every voxel the grid does not represent decodes as `fill_value`.
 
-- With `lossless: true` (`tolerance: 0`), an encoder MUST leave a voxel
-  inactive only if it exactly equals the background; decoding reproduces the
-  input bit-for-bit.
+- With `lossless: true` (`tolerance: 0`), an encoder MUST leave a voxel inactive
+  only if and only if it exactly equals the background so that decoding
+  reproduces the input bit-for-bit.
 - With `lossless: false` and `tolerance: t > 0`, an encoder MAY additionally
-  leave inactive any voxel within `t` of the background.
+  leave inactive any voxel within `t` of the background. Custom algorithms may
+  choose to use a more complex rule than thresholding the data at
+  fill_value+tolerance, and simply write down a tolerance based on empircal
+  upper limit of dropped voxel values after writing in tolerance.
 - The quantized grid types are lossy in the value domain independently of
   `tolerance`.
 
@@ -318,8 +324,8 @@ active are stored at full precision, subject to `grid_type`.
 `array -> array` codec may, and implementations SHOULD reject such a chain when
 the array metadata is parsed:
 
-- [`reshape`](../reshape/README.md) does not preserve dimension identity, so
-  no role describes its output. Composing it with `transpose` does not make it
+- [`reshape`](../reshape/README.md) does not preserve dimension identity, so no
+  role describes its output. Composing it with `transpose` does not make it
   conformant.
 - Value-domain codecs, [`cast_value`](../cast_value/README.md) and
   [`scale_offset`](../scale_offset/README.md) among them, would leave grid
@@ -334,23 +340,34 @@ traverse it directly. Such a reader skips the `array -> array` decode stage, so
 it MUST compose the permutation of any preceding
 [`transpose`](../transpose/README.md) into its own coordinate mapping.
 
-This is most useful for direct GPU rendering applications, and skipping subtrees by value range requires `stats` of `minmax` or `all`;
-encoders targeting such readers SHOULD write one of those rather than `none`.
+This is most useful for direct GPU rendering applications, and skipping subtrees
+by value range requires `stats` of `minmax` or `all`; encoders targeting such
+readers SHOULD write one of those rather than `none`.
 
 ## Examples
 
-`float32`, leaf- and node-aligned 128³ chunks, lossless, with per-node
-min/max:
+`float32`, leaf- and node-aligned 128³ chunks, lossless, with per-node min/max:
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
   "shape": [1024, 2048, 2048],
   "data_type": "float32",
-  "fill_value": 0.0,
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [128, 128, 128] }
+    "configuration": {
+      "chunk_shape": [128, 128, 128]
+    }
   },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["z", "y", "x"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -364,7 +381,13 @@ min/max:
         "tolerance": 0.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -373,6 +396,24 @@ A segmentation mask, topology only:
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
+  "shape": [1024, 2048, 2048],
+  "data_type": "bool",
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+      "chunk_shape": [128, 128, 128]
+    }
+  },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": false,
+  "dimension_names": ["z", "y", "x"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -394,6 +435,24 @@ Quantized and sparsified with a recorded tolerance:
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
+  "shape": [1024, 2048, 2048],
+  "data_type": "float32",
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+      "chunk_shape": [128, 128, 128]
+    }
+  },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["z", "y", "x"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -407,7 +466,13 @@ Quantized and sparsified with a recorded tolerance:
         "tolerance": 12.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -417,13 +482,24 @@ covers `channel` in full:
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
   "shape": [512, 1024, 1024, 3],
   "data_type": "float32",
-  "fill_value": 0.0,
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [128, 128, 128, 3] }
+    "configuration": {
+      "chunk_shape": [128, 128, 128, 3]
+    }
   },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["z", "y", "x", "c"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -437,7 +513,13 @@ covers `channel` in full:
         "tolerance": 0.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -447,14 +529,24 @@ grids per chunk buffer.
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
   "shape": [64, 1024, 2048, 2048],
   "data_type": "float32",
-  "fill_value": 0.0,
-  "dimension_names": ["t", "z", "y", "x"],
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [4, 128, 128, 128] }
+    "configuration": {
+      "chunk_shape": [4, 128, 128, 128]
+    }
   },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["t", "z", "y", "x"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -468,7 +560,13 @@ grids per chunk buffer.
         "tolerance": 0.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -477,14 +575,24 @@ The same with a three-component value per voxel, `[T, Z, Y, X, C]`:
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
   "shape": [64, 1024, 2048, 2048, 3],
   "data_type": "float32",
-  "fill_value": 0.0,
-  "dimension_names": ["t", "z", "y", "x", "c"],
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [4, 128, 128, 128, 3] }
+    "configuration": {
+      "chunk_shape": [4, 128, 128, 128, 3]
+    }
   },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["t", "z", "y", "x", "c"],
   "codecs": [
     {
       "name": "nanovdb",
@@ -498,7 +606,13 @@ The same with a three-component value per voxel, `[T, Z, Y, X, C]`:
         "tolerance": 0.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -509,16 +623,31 @@ codec's input `[t, z, y, x, c]`. `dimension_names` is in the array's order and
 
 ```json
 {
+  "zarr_format": 3,
+  "node_type": "array",
   "shape": [64, 3, 1024, 2048, 2048],
   "data_type": "float32",
-  "fill_value": 0.0,
-  "dimension_names": ["t", "c", "z", "y", "x"],
   "chunk_grid": {
     "name": "regular",
-    "configuration": { "chunk_shape": [4, 3, 128, 128, 128] }
+    "configuration": {
+      "chunk_shape": [4, 3, 128, 128, 128]
+    }
   },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": 0.0,
+  "dimension_names": ["t", "c", "z", "y", "x"],
   "codecs": [
-    { "name": "transpose", "configuration": { "order": [0, 2, 3, 4, 1] } },
+    {
+      "name": "transpose",
+      "configuration": {
+        "order": [0, 2, 3, 4, 1]
+      }
+    },
     {
       "name": "nanovdb",
       "configuration": {
@@ -531,7 +660,13 @@ codec's input `[t, z, y, x, c]`. `dimension_names` is in the array's order and
         "tolerance": 0.0
       }
     },
-    { "name": "zstd", "configuration": { "level": 3, "checksum": false } }
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 3,
+        "checksum": false
+      }
+    }
   ]
 }
 ```
@@ -554,8 +689,8 @@ expected decoded values and active/inactive topology.
   a buffer written by a newer NanoVDB or holding a value type it does not
   handle. It does not declare its tree configuration; see
   [`tree_config`](#tree_config).
-- Reference implementation: in progress, targeting a Zarr reader that passes
-  the buffer through to a GPU without densifying it.
+- Reference implementation: in progress, targeting a Zarr reader that passes the
+  buffer through to a GPU without densifying it.
 
 ## Change log
 

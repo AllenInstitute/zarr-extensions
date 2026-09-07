@@ -49,6 +49,7 @@
             "Int16",
             "Int32",
             "Int64",
+            "UInt8",
             "UInt32",
             "Mask",
             "Fp4",
@@ -58,9 +59,10 @@
             "Vec3f",
             "Vec3d",
             "Vec4f",
-            "Vec4d"
+            "Vec4d",
+            "RGBA8"
           ],
-          "description": "NanoVDB GridType of the encoded grid. Not redundant with the array data_type: Fp4, Fp8, Fp16, and FpN encode a float32 array at reduced precision, and the Vec types pair a float32 or float64 array with a 'channel' dimension of extent 3 or 4."
+          "description": "NanoVDB GridType of the encoded grid. Not redundant with the array data_type: Fp4, Fp8, Fp16, and FpN encode a float32 array at reduced precision, the Vec types pair a float32 or float64 array with a 'channel' dimension of extent 3 or 4, and RGBA8 packs a uint8 'channel' dimension of extent 3 or 4 into one 32-bit word with red in the lowest byte."
         },
         "tree_config": {
           "type": "array",
