@@ -122,20 +122,6 @@ One of `none`, `bbox`, `minmax`, `all`: the per-node statistics the grid
 carries. `bbox` includes active bounding boxes; `minmax` adds per-node minimum
 and maximum values; `all` adds average and standard deviation.
 
-### `lossless`
-
-A boolean indicating whether decoding reproduces the encoded array exactly. When
-`true`, `tolerance` MUST be `0` and `grid_type` MUST NOT be a quantized type.
-When `false`, `tolerance` MUST be greater than `0` or `grid_type` MUST be a
-quantized type.
-
-### `tolerance`
-
-A number ≥ 0: the maximum absolute deviation from the background value at which
-the encoder may leave a voxel inactive. `0` permits dropping only voxels exactly
-equal to the background. See
-[Sparsity and losslessness](#sparsity-and-losslessness).
-
 ## Supported chunk shapes
 
 The chunk's rank MUST equal the length of [`dimension_roles`](#dimension_roles).
@@ -206,8 +192,8 @@ SHOULD be given the `grid` role instead, placing each index on its own grid.
 its own. NanoVDB places red in the lowest byte, and the `channel` index gives
 the component: `0` red, `1` green, `2` blue, `3` alpha. With an extent of `3` an
 encoder MUST write an alpha of `255`, and a decoder MUST discard the alpha byte,
-so a three-channel array still round-trips exactly and `lossless: true` remains
-available. The background is the word whose red, green and blue bytes all equal
+so a three-channel array still round-trips exactly. The background is the word
+whose red, green and blue bytes all equal
 `fill_value`, with alpha `255` at an extent of `3` and `fill_value` at an extent
 of `4`.
 
@@ -222,9 +208,8 @@ For vector grids, `fill_value` being a scalar means:
 
 - The grid's background value MUST be the vector all of whose components equal
   `fill_value`. A background with unequal components MUST NOT be written.
-- A voxel is active or inactive as a whole. An encoder MUST treat a voxel as
-  non-background if _any_ component differs from `fill_value` by more than
-  `tolerance`.
+- A voxel is active or inactive as a whole. A voxel is active if _any_ of its
+  components differs from `fill_value`.
 
 > [!NOTE] **Open question for review.** `stats: minmax` is undefined for vector
 > grids, which have no natural total order. Componentwise minima and maxima are
@@ -299,24 +284,19 @@ from the array metadata and chunk buffers alone.
    of its extents along the `grid` dimensions see
    [Grid enumeration](#grid-enumeration).
 
-### Sparsity and losslessness
+### Sparsity
 
-Decoding produces the grid's active values composited over the array's
+A voxel is active if and only if its value differs from the array's
+`fill_value`. Decoding produces the grid's active values composited over
 `fill_value`: every voxel the grid does not represent decodes as `fill_value`.
 
-- With `lossless: true` (`tolerance: 0`), an encoder MUST leave a voxel inactive
-  only if and only if it exactly equals the background so that decoding
-  reproduces the input bit-for-bit.
-- With `lossless: false` and `tolerance: t > 0`, an encoder MAY additionally
-  leave inactive any voxel within `t` of the background. Custom algorithms may
-  choose to use a more complex rule than thresholding the data at
-  fill_value+tolerance, and simply write down a tolerance based on empircal
-  upper limit of dropped voxel values after writing in tolerance.
-- The quantized grid types are lossy in the value domain independently of
-  `tolerance`.
+Activity is therefore fully determined by the array and its `fill_value`. An
+encoder has no discretion, two conformant encoders produce the same active set,
+and decoding reproduces the input bit-for-bit for every non-quantized
+`grid_type`. 
 
-`tolerance` is a topology threshold, not a value threshold: voxels that remain
-active are stored at full precision, subject to `grid_type`.
+Choosing which voxels to store is the writer's business, not the codec's: to
+drop a voxel write `fill_value` into it before encoding.
 
 ## Interaction with other codecs
 
@@ -346,7 +326,7 @@ readers SHOULD write one of those rather than `none`.
 
 ## Examples
 
-`float32`, leaf- and node-aligned 128³ chunks, lossless, with per-node min/max:
+`float32`, leaf- and node-aligned 128³ chunks, with per-node min/max:
 
 ```json
 {
@@ -376,9 +356,7 @@ readers SHOULD write one of those rather than `none`.
         "grid_type": "Float",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "minmax",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "minmax"
       }
     },
     {
@@ -422,16 +400,14 @@ A segmentation mask, topology only:
         "grid_type": "Mask",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "bbox",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "bbox"
       }
     }
   ]
 }
 ```
 
-Quantized and sparsified with a recorded tolerance:
+Quantized to 16 bits per voxel:
 
 ```json
 {
@@ -461,9 +437,7 @@ Quantized and sparsified with a recorded tolerance:
         "grid_type": "Fp16",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "all",
-        "lossless": false,
-        "tolerance": 12.0
+        "stats": "all"
       }
     },
     {
@@ -508,9 +482,7 @@ covers `channel` in full:
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "bbox",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "bbox"
       }
     },
     {
@@ -555,9 +527,7 @@ grids per chunk buffer.
         "grid_type": "Float",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "minmax",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "minmax"
       }
     },
     {
@@ -601,9 +571,7 @@ The same with a three-component value per voxel, `[T, Z, Y, X, C]`:
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "bbox",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "bbox"
       }
     },
     {
@@ -655,9 +623,7 @@ codec's input `[t, z, y, x, c]`. `dimension_names` is in the array's order and
         "grid_type": "Vec3f",
         "tree_config": [5, 4, 3],
         "index_space": "global",
-        "stats": "bbox",
-        "lossless": true,
-        "tolerance": 0.0
+        "stats": "bbox"
       }
     },
     {
@@ -671,12 +637,6 @@ codec's input `[t, z, y, x, c]`. `dimension_names` is in the array's order and
 }
 ```
 
-## Example data
-
-TBD. Fixtures are planned alongside the reference implementation: a small
-`float32` volume and a `Mask` volume, each with a `fixtures.json` recording the
-expected decoded values and active/inactive topology.
-
 ## Interoperability and compatibility
 
 - The buffer is a plain NanoVDB grid, readable by NanoVDB independently of Zarr
@@ -689,8 +649,11 @@ expected decoded values and active/inactive topology.
   a buffer written by a newer NanoVDB or holding a value type it does not
   handle. It does not declare its tree configuration; see
   [`tree_config`](#tree_config).
-- Reference implementation: in progress, targeting a Zarr reader that passes the
-  buffer through to a GPU without densifying it.
+
+## Reference implementation
+
+-
+- Experimental neuroglancer branch:
 
 ## Change log
 
