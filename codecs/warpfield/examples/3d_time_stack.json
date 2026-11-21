@@ -1,0 +1,9 @@
+{
+  "name": "warpfield",
+  "configuration": {
+    "axis_roles": ["independent", "spatial", "spatial", "spatial", "component"],
+    "error_bound": 0.25,
+    "face_error_bound": 0.0625,
+    "predictor": "eno"
+  }
+}

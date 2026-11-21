@@ -1,0 +1,13 @@
+{
+  "name": "warpfield",
+  "configuration": {
+    "axis_roles": ["smooth", "spatial", "spatial", "component"],
+    "error_bound": 0.25,
+    "face_error_bound": 0.0625,
+    "predictor": "eno",
+    "jacobian": {
+      "grid_spacing": [4, 4],
+      "min_det": 0.1
+    }
+  }
+}

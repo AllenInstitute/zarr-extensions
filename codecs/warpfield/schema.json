@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "const": "warpfield"
+    },
+    "configuration": {
+      "type": "object",
+      "properties": {
+        "axis_roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["spatial", "smooth", "independent", "component"]
+          },
+          "minItems": 1,
+          "allOf": [
+            {
+              "contains": { "const": "component" },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": { "enum": ["spatial", "smooth"] },
+              "minContains": 1
+            }
+          ],
+          "description": "One role per input dimension, outermost first. 'spatial' and 'smooth' dimensions are predicted across (only 'spatial' ones enter the Jacobian); 'independent' dimensions and the 'component' dimension are coded index by index."
+        },
+        "error_bound": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Absolute error bound for interior samples, in the units of the stored values."
+        },
+        "face_error_bound": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Absolute error bound for samples on a chunk face (index 0 or N-1 along any predicted dimension). Must not exceed error_bound. Default error_bound / 4."
+        },
+        "predictor": {
+          "type": "string",
+          "enum": ["linear", "cubic", "eno"],
+          "default": "eno"
+        },
+        "boundary": {
+          "type": "string",
+          "enum": ["clamped", "extrapolate"],
+          "default": "clamped",
+          "description": "'extrapolate' exists for comparison experiments only and is not seam-free."
+        },
+        "jacobian": {
+          "type": "object",
+          "properties": {
+            "grid_spacing": {
+              "type": "array",
+              "items": { "type": "number", "exclusiveMinimum": 0 },
+              "minItems": 1,
+              "maxItems": 3,
+              "description": "Distance between adjacent field samples along each 'spatial' dimension, in order, in the units of the stored values."
+            },
+            "min_det": {
+              "type": "number",
+              "default": 0
+            },
+            "tight_error_bound": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Error bound for samples promoted by the Jacobian check. Default error_bound / 8."
+            }
+          },
+          "required": ["grid_spacing"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["axis_roles", "error_bound"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["name", "configuration"],
+  "additionalProperties": false
+}
